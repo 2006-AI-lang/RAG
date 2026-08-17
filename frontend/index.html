@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FitQA - 运动健身智能问答系统</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="css/style.css?v=17">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                    <rect x="3" y="10" width="4" height="12" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                    <rect x="9" y="7" width="4" height="18" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                    <line x1="13" y1="16" x2="19" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                    <rect x="19" y="7" width="4" height="18" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                    <rect x="25" y="10" width="4" height="12" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                </svg>
+            </div>
+            <h1 class="app-title">FitQA</h1>
+            <span class="app-subtitle">运动健身智能问答系统</span>
+        </div>
+        <nav class="header-nav" id="mainNav">
+            <button class="nav-btn active" data-tab="chat">智能问答</button>
+            <button class="nav-btn" data-tab="compare">检索对比</button>
+            <button class="nav-btn" data-tab="knowledge">知识库</button>
+            <button class="nav-btn" data-tab="history">问答历史</button>
+        </nav>
+        <div class="header-right">
+            <span class="api-status" id="apiStatus" title="API状态">
+                <span class="status-dot offline"></span>
+                <span id="apiStatusText">离线演示</span>
+            </span>
+            <button class="btn-settings" id="btnSettings" title="高级设置">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- 高级设置弹窗 -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>高级设置</h3>
+                <button class="modal-close" id="btnCloseSettings">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- 模式切换 -->
+                <div class="setting-group">
+                    <label class="setting-label">运行模式</label>
+                    <div class="current-mode-row">
+                        <span class="current-mode-label">当前模式：</span>
+                        <span class="current-mode-value" id="currentModeLabel">离线模式</span>
+                    </div>
+                    <div class="mode-toggle">
+                        <button class="mode-btn active" data-mode="mock">离线模式</button>
+                        <button class="mode-btn" data-mode="real">大模型模式</button>
+                    </div>
+                    <p class="setting-hint">离线模式：直接拼接检索结果，不调用 LLM</p>
+                    <button class="btn btn-sm btn-primary btn-apply-mode" id="btnApplyMode">应用离线模式</button>
+                </div>
+
+                <!-- 已添加模型（仅大模型模式显示） -->
+                <div class="setting-group" id="modelManageGroup">
+                    <label class="setting-label">已添加模型</label>
+                    <div class="model-list" id="modelList">
+                        <div class="model-list-empty" id="modelListEmpty">暂无模型，请添加</div>
+                    </div>
+
+                    <button class="btn btn-sm btn-outline btn-add-model" id="btnAddModel">
+                        <svg width="14" height="14" viewBox="0 0 16 16"><line x1="8" y1="2" x2="8" y2="14" stroke="currentColor" stroke-width="2"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2"/></svg>
+                        添加新模型
+                    </button>
+
+                    <!-- 添加模型表单 -->
+                    <div class="add-model-form hidden" id="addModelForm">
+                        <div class="form-row">
+                            <label class="setting-label">模型别名</label>
+                            <input type="text" id="newModelName" class="setting-input" placeholder="如：DeepSeek">
+                        </div>
+                        <div class="form-row">
+                            <label class="setting-label">API 地址</label>
+                            <input type="text" id="newModelUrl" class="setting-input" placeholder="https://api.deepseek.com/v1">
+                        </div>
+                        <div class="form-row">
+                            <label class="setting-label">API Key</label>
+                            <div class="input-wrapper">
+                                <input type="password" id="newModelKey" class="setting-input" placeholder="sk-...">
+                                <button class="btn-toggle-visibility" id="btnToggleNewKey" title="显示/隐藏">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label class="setting-label">模型名称</label>
+                            <input type="text" id="newModelModelName" class="setting-input" placeholder="deepseek-chat">
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-outline btn-test" id="btnTestNewModel">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                                </svg>
+                                测试连接
+                            </button>
+                            <button class="btn btn-primary" id="btnSaveNewModel">保存模型</button>
+                            <button class="btn btn-outline" id="btnCancelAddModel">取消</button>
+                        </div>
+                        <div class="test-result" id="testNewModelResult"></div>
+                    </div>
+                </div>
+
+                <!-- 当前模型（仅大模型模式显示） -->
+                <div class="setting-group llm-config" id="currentModelGroup">
+                    <label class="setting-label">当前模型</label>
+                    <div class="current-model-row">
+                        <span class="current-model-name" id="currentModelName">未选择</span>
+                        <button class="btn btn-sm btn-outline" id="btnSelectModel">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            选择模型
+                        </button>
+                    </div>
+                    <p class="setting-hint">切换到大模型模式后将使用所选模型</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCancelSettings">关闭</button>
+            </div>
+            <div class="settings-toast" id="settingsToast"></div>
+        </div>
+    </div>
+
+    <!-- 模型选择弹窗 -->
+    <div class="modal-overlay" id="modelSelectModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>选择模型</h3>
+                <button class="modal-close" id="btnCloseModelSelect">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="model-list" id="modelSelectList"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主内容区 -->
+    <main class="app-main">
+        <!-- 标签1：智能问答教练 -->
+        <section class="tab-panel active" id="tab-chat">
+            <div class="chat-container">
+                <div class="chat-sidebar">
+                    <div class="sidebar-header">
+                        <h3>对话管理</h3>
+                        <button class="btn btn-sm btn-outline" id="btnNewChat" title="新建对话">
+                            <svg width="16" height="16" viewBox="0 0 16 16"><line x1="8" y1="2" x2="8" y2="14" stroke="currentColor" stroke-width="2"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2"/></svg>
+                        </button>
+                    </div>
+                    <div class="chat-session-list" id="chatSessionList">
+                        <!-- 动态填充 -->
+                    </div>
+                </div>
+                <div class="chat-main">
+                    <div class="chat-disclaimer">
+                        <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="7" y1="4" x2="7" y2="8" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="10.5" r="0.8" fill="currentColor"/></svg>
+                        <span>免责声明：本系统仅提供健身知识科普与参考，不构成专业医疗或训练建议。涉及伤病问题请咨询专业医生或教练。</span>
+                    </div>
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-welcome">
+                            <div class="welcome-icon">
+                                <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
+                                    <rect x="3" y="10" width="4" height="12" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
+                                    <rect x="9" y="7" width="4" height="18" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
+                                    <line x1="13" y1="16" x2="19" y2="16" stroke="#4A9E6B" stroke-width="2.5" stroke-linecap="round"/>
+                                    <rect x="19" y="7" width="4" height="18" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
+                                    <rect x="25" y="10" width="4" height="12" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
+                                </svg>
+                            </div>
+                            <h2>欢迎使用 FitQA</h2>
+                            <p>我是你的智能健身教练助手，可以回答关于减脂、增肌、力量训练、运动损伤预防等问题。</p>
+                            <div class="suggest-questions">
+                                <span>试试这些问题：</span>
+                                <button class="suggest-btn" data-question="新手增肌训练一周几次比较合适？">新手增肌训练一周几次比较合适？</button>
+                                <button class="suggest-btn" data-question="如何正确做杠铃深蹲？">如何正确做杠铃深蹲？</button>
+                                <button class="suggest-btn" data-question="减脂期饮食应该怎么安排？">减脂期饮食应该怎么安排？</button>
+                                <button class="suggest-btn" data-question="跑步膝盖疼是什么原因？">跑步膝盖疼是什么原因？</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <div class="chat-input-wrapper">
+                            <textarea id="chatInput" placeholder="输入你的健身问题，按 Enter 发送..." rows="1"></textarea>
+                            <button class="btn btn-primary btn-send" id="btnSend" title="发送">
+                                <svg width="20" height="20" viewBox="0 0 20 20"><path d="M2 2 L18 10 L2 18 L5 10 Z" fill="currentColor"/></svg>
+                            </button>
+                        </div>
+                        <div class="chat-input-hint">
+                            <span class="hint-item">支持检索模式：</span>
+                            <label class="mode-switch">
+                                <input type="radio" name="searchMode" value="hybrid" checked> 混合检索
+                            </label>
+                            <label class="mode-switch">
+                                <input type="radio" name="searchMode" value="bm25"> BM25
+                            </label>
+                            <label class="mode-switch">
+                                <input type="radio" name="searchMode" value="vector"> 向量检索
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 标签2：检索对比面板 -->
+        <section class="tab-panel" id="tab-compare">
+            <div class="compare-container">
+                <div class="compare-header">
+                    <h2>检索效果对比分析</h2>
+                    <p>同时展示 BM25（字面检索）与 向量检索（语义检索）的结果差异，直观对比两种检索方法</p>
+                </div>
+                <div class="compare-input-area">
+                    <div class="compare-input-wrapper">
+                        <input type="text" id="compareInput" placeholder="输入问题，对比两种检索效果...">
+                        <button class="btn btn-primary" id="btnCompare">开始对比</button>
+                    </div>
+                </div>
+                <div class="compare-results" id="compareResults">
+                    <div class="compare-empty">
+                        <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                            <rect x="8" y="12" width="20" height="40" rx="2" stroke="#999" stroke-width="2"/>
+                            <rect x="36" y="12" width="20" height="40" rx="2" stroke="#999" stroke-width="2"/>
+                            <line x1="18" y1="22" x2="26" y2="22" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="28" x2="26" y2="28" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="34" x2="24" y2="34" stroke="#999" stroke-width="1.5"/>
+                            <line x1="46" y1="22" x2="54" y2="22" stroke="#999" stroke-width="1.5"/>
+                            <line x1="46" y1="28" x2="54" y2="28" stroke="#999" stroke-width="1.5"/>
+                            <line x1="46" y1="34" x2="52" y2="34" stroke="#999" stroke-width="1.5"/>
+                        </svg>
+                        <p>输入一个问题，查看两种检索方法的对比效果</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 标签3：知识库浏览 -->
+        <section class="tab-panel" id="tab-knowledge">
+            <div class="knowledge-container">
+                <div class="knowledge-header">
+                    <h2>知识库浏览</h2>
+                    <div class="knowledge-actions">
+                        <button class="btn btn-primary btn-sm" id="btnAddKnowledge">
+                            <svg width="14" height="14" viewBox="0 0 16 16"><line x1="8" y1="2" x2="8" y2="14" stroke="currentColor" stroke-width="2"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2"/></svg>
+                            新增知识
+                        </button>
+                        <button class="btn btn-outline btn-sm" id="btnRebuildIndex">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            重建索引
+                        </button>
+                        <button class="btn btn-outline btn-sm" id="btnBatchKnowledge">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                            批量操作
+                        </button>
+                    </div>
+                    <div class="knowledge-stats" id="knowledgeStats">
+                        <span class="stat-item">知识条目：<strong id="statTotal">0</strong></span>
+                        <span class="stat-item">分类：<strong id="statCats">0</strong></span>
+                    </div>
+                </div>
+                <div class="knowledge-toolbar">
+                    <div class="search-box">
+                        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5.5" stroke="#999" stroke-width="1.5" fill="none"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="#999" stroke-width="1.5"/></svg>
+                        <input type="text" id="knowledgeSearch" placeholder="搜索知识库...">
+                    </div>
+                    <div class="knowledge-sort">
+                        <label class="sort-label" for="knowledgeSort">排序</label>
+                        <select id="knowledgeSort" class="sort-select">
+                            <option value="index">按索引</option>
+                            <option value="category">按分类</option>
+                            <option value="time">按导入时间</option>
+                        </select>
+                    </div>
+                    <div class="filter-tags" id="filterTags">
+                        <button class="filter-tag active" data-cat="all">全部</button>
+                    </div>
+                </div>
+                <div class="batch-toolbar hidden" id="knowledgeBatchBar">
+                    <label class="batch-check-all">
+                        <input type="checkbox" id="knowledgeCheckAll">
+                        <span>全选</span>
+                    </label>
+                    <span class="batch-count" id="knowledgeBatchCount">已选 0 项</span>
+                    <div class="batch-actions">
+                        <button class="btn btn-sm btn-primary" id="btnBatchEditKnowledge">批量编辑</button>
+                        <button class="btn btn-sm btn-danger" id="btnBatchDeleteKnowledge">批量删除</button>
+                    </div>
+                    <button class="btn btn-sm btn-ghost" id="btnCancelKnowledgeBatch">取消</button>
+                </div>
+                <div class="knowledge-list" id="knowledgeList">
+                    <!-- 动态填充 -->
+                </div>
+            </div>
+        </section>
+
+        <!-- 标签4：问答历史 -->
+        <section class="tab-panel" id="tab-history">
+            <div class="history-container">
+                <div class="history-header">
+                    <h2>问答历史</h2>
+                    <div class="history-actions">
+                        <button class="btn btn-sm btn-outline" id="btnBatchDeleteHistory">批量删除</button>
+                        <button class="btn btn-sm btn-outline" id="btnClearHistory">清空历史</button>
+                    </div>
+                </div>
+                <div class="batch-toolbar hidden" id="historyBatchBar">
+                    <label class="batch-check-all">
+                        <input type="checkbox" id="historyCheckAll">
+                        <span>全选</span>
+                    </label>
+                    <span class="batch-count" id="historyBatchCount">已选 0 项</span>
+                    <div class="batch-actions">
+                        <button class="btn btn-sm btn-danger" id="btnConfirmBatchDeleteHistory">删除选中</button>
+                    </div>
+                    <button class="btn btn-sm btn-ghost" id="btnCancelHistoryBatch">取消</button>
+                </div>
+                <div class="history-list" id="historyList">
+                    <div class="history-empty">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="12" y="8" width="24" height="32" rx="3" stroke="#999" stroke-width="2"/>
+                            <line x1="18" y1="16" x2="30" y2="16" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="22" x2="30" y2="22" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="28" x2="26" y2="28" stroke="#999" stroke-width="1.5"/>
+                        </svg>
+                        <p>暂无问答记录</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Toast提示 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- 知识条目编辑弹窗 -->
+    <div class="modal-overlay" id="entryModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <div class="modal-tabs" id="knowledgeTabs">
+                    <button class="modal-tab active" data-tab="entry">新增知识</button>
+                    <button class="modal-tab" data-tab="import">导入文档</button>
+                </div>
+                <button class="modal-close" id="btnCloseEntry">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-tab-panel" id="tabPanelEntry">
+                    <form id="entryForm">
+                    <input type="hidden" id="entryId" value="">
+                    <div class="form-group">
+                        <label class="form-label" for="entryTitle">标题 <span class="required">*</span></label>
+                        <input type="text" id="entryTitle" class="form-input" placeholder="输入知识条目标题" required maxlength="200">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="entryCategory">分类 <span class="required">*</span></label>
+                        <div class="category-input-wrapper">
+                            <input type="text" id="entryCategory" class="form-input" placeholder="选择或输入新分类" list="categoryList" required>
+                            <datalist id="categoryList"></datalist>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="entryContent">内容 <span class="required">*</span></label>
+                        <textarea id="entryContent" class="form-textarea" placeholder="输入知识内容" rows="6" required></textarea>
+                    </div>
+                    <div class="form-group" id="splitOptionGroup">
+                        <label class="form-label">
+                            <input type="checkbox" id="entrySplitEnabled" class="form-checkbox">
+                            内容分片 <small class="form-hint">将长内容按结构拆分为多条知识</small>
+                        </label>
+                        <div class="radio-group split-method-group hidden" id="splitMethodGroup">
+                            <label class="radio-option">
+                                <input type="radio" name="entrySplitMethod" value="title">
+                                <span>按标题拆分</span>
+                                <small>识别 Markdown 标题、数字编号等</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="entrySplitMethod" value="paragraph">
+                                <span>按段落拆分</span>
+                                <small>按空行分段，合并短段落</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="entrySplitMethod" value="length">
+                                <span>按固定长度拆分</span>
+                                <small>每约 500 字拆为一条，适合无标题长文</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="entrySplitMethod" value="llm">
+                                <span>智能语义拆分（LLM）</span>
+                                <small>由大模型按语义切分，效果最好但较慢</small>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label class="form-label" for="entrySource">来源 <span class="required">*</span></label>
+                            <input type="text" id="entrySource" class="form-input" placeholder="如：国家体育总局" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="entryUrl">来源链接</label>
+                            <input type="url" id="entryUrl" class="form-input" placeholder="https://...">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="entryTags">标签 <small class="form-hint">多个标签用逗号分隔</small></label>
+                        <input type="text" id="entryTags" class="form-input" placeholder="如：深蹲, 力量训练, 下肢">
+                    </div>
+                </form>
+                </div>
+                <!-- 导入文档 tab -->
+                <div class="modal-tab-panel hidden" id="tabPanelImport">
+                    <div class="import-mode-tabs">
+                        <button class="import-mode-btn active" data-mode="manual">手动导入</button>
+                        <button class="import-mode-btn" data-mode="smart">智能导入</button>
+                    </div>
+                    <div class="upload-area" id="uploadArea">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <p>点击选择或拖拽文件到此处</p>
+                        <small>支持 PDF / Word / TXT，可多选，单个不超过 10MB</small>
+                        <input type="file" id="importFiles" accept=".pdf,.docx,.txt" multiple hidden>
+                    </div>
+                    <div class="selected-files" id="selectedFiles"></div>
+                    <div class="form-group" id="importSplitOptionGroup">
+                        <label class="form-label">
+                            <input type="checkbox" id="importSplitEnabled" class="form-checkbox">
+                            内容分片 <small class="form-hint">将长内容按结构拆分为多条知识</small>
+                        </label>
+                        <div class="radio-group split-method-group hidden" id="importSplitMethodGroup">
+                            <label class="radio-option">
+                                <input type="radio" name="importSplitMethod" value="title">
+                                <span>按标题拆分</span>
+                                <small>识别 Markdown 标题、数字编号等</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="importSplitMethod" value="paragraph">
+                                <span>按段落拆分</span>
+                                <small>按空行分段，合并短段落</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="importSplitMethod" value="length">
+                                <span>按固定长度拆分</span>
+                                <small>每约 500 字拆为一条，适合无标题长文</small>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="importSplitMethod" value="llm">
+                                <span>智能语义拆分（LLM）</span>
+                                <small>由大模型按语义切分，效果最好但较慢</small>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-row-2" id="importSourceRow">
+                        <div class="form-group">
+                            <label class="form-label" for="importSource">来源</label>
+                            <input type="text" id="importSource" class="form-input" placeholder="默认使用文档名">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="importUrl">来源链接</label>
+                            <input type="url" id="importUrl" class="form-input" placeholder="https://...">
+                        </div>
+                    </div>
+                    <div class="import-actions">
+                        <button class="btn btn-primary" id="btnStartImport">开始导入</button>
+                    </div>
+                    <div class="import-result hidden" id="importResult"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCancelEntry">取消</button>
+                <button class="btn btn-primary" id="btnSaveEntry">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量编辑知识弹窗 -->
+    <div class="modal-overlay" id="batchEditModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>批量编辑知识</h3>
+                <button class="modal-close" id="btnCloseBatchEdit">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="batch-edit-count" id="batchEditCount">已选 0 条知识</p>
+                <div class="form-group">
+                    <label class="form-label" for="batchEditCategory">分类 <small class="form-hint">留空则不修改</small></label>
+                    <div class="category-input-wrapper">
+                        <input type="text" id="batchEditCategory" class="form-input" placeholder="选择或输入新分类" list="categoryList">
+                        <datalist id="categoryList"></datalist>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="batchEditSource">来源 <small class="form-hint">留空则不修改</small></label>
+                    <input type="text" id="batchEditSource" class="form-input" placeholder="输入新的来源名称">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="batchEditUrl">来源链接 <small class="form-hint">留空则不修改</small></label>
+                    <input type="url" id="batchEditUrl" class="form-input" placeholder="https://...">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="batchEditTags">标签 <small class="form-hint">多个标签用逗号分隔，留空则不修改</small></label>
+                    <input type="text" id="batchEditTags" class="form-input" placeholder="如：深蹲, 力量训练">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCancelBatchEdit">取消</button>
+                <button class="btn btn-primary" id="btnSaveBatchEdit">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div class="modal-overlay" id="deleteConfirmModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>确认删除</h3>
+                <button class="modal-close" id="btnCloseDeleteConfirm">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="delete-warning">
+                    <div class="delete-warning-icon">!</div>
+                    <div class="delete-warning-body">
+                        <p class="delete-warning-title">确定要删除这条知识吗？</p>
+                        <p class="delete-entry-title" id="deleteEntryTitle"></p>
+                        <p class="delete-confirm-hint">删除后该条目将无法恢复</p>
+                    </div>
+                </div>
+                <label class="delete-rebuild-option">
+                    <input type="checkbox" id="deleteRebuildIndex" checked>
+                    <div class="delete-rebuild-text">
+                        <span>删除后重建检索索引</span>
+                        <small>取消勾选可加快删除速度，但检索结果可能暂时不准确，可稍后手动重建</small>
+                    </div>
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCancelDelete">取消</button>
+                <button class="btn btn-danger" id="btnConfirmDelete">确认删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/knowledge.js?v=11"></script>
+    <script src="js/app.js?v=19"></script>
+</body>
+</html>

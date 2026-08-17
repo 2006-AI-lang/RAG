@@ -1,0 +1,154 @@
+"""
+FitQA - 运动健身知识问答系统后端入口。
+
+启动方式：
+    uvicorn main:app --host 0.0.0.0 --port 8000
+    或双击 start.bat
+"""
+
+import os
+from pathlib import Path
+# 使用 HuggingFace 国内镜像，解决模型下载超时问题
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import settings
+from database import init_db
+from data.knowledge_base import get_all_knowledge
+from retrievers.bm25_retriever import BM25Retriever
+from retrievers.vector_retriever import VectorRetriever
+from retrievers.hybrid import HybridRetriever
+from llm.client import LLMClient
+from api.ask import router as ask_router
+from api.knowledge import router as knowledge_router
+from api.history import router as history_router
+from api.config import router as config_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时构建索引，关闭时清理资源。"""
+    print("=" * 50)
+    print("FitQA Backend Starting...")
+    print("=" * 50)
+
+    # 0. 初始化加密密钥
+    settings.get_or_create_encryption_key()
+    print("[Startup] Encryption key ready.")
+
+    # 1. 初始化数据库
+    init_db()
+    print("[Startup] Database initialized.")
+
+    # 1.5 应用数据库中的激活模型配置（覆盖 .env，保证重启后生效）
+    try:
+        from database import get_active_model
+        active = get_active_model()
+        if active:
+            api_key = settings.decrypt_api_key(active["api_key_encrypted"])
+            settings.update_llm_config(
+                base_url=active["base_url"],
+                api_key=api_key,
+                model_name=active["model_name"],
+            )
+            settings.update_mode("real")
+            print(f"[Startup] Applied active model: {active['name']} ({active['model_name']})")
+        else:
+            print("[Startup] No active model in DB, using .env config.")
+    except Exception as e:
+        print(f"[Startup] Failed to apply active model (key may be invalid): {e}")
+        print("[Startup] Falling back to .env config.")
+
+    # 2. 构建 BM25 索引
+    print("[Startup] Building BM25 index...")
+    bm25 = BM25Retriever()
+    print(f"[Startup] BM25 index ready ({len(bm25.texts)} documents).")
+
+    # 3. 构建向量索引（失败自动降级）
+    print("[Startup] Building Vector (FAISS) index...")
+    vector = VectorRetriever()
+
+    # 4. 创建混合检索器
+    hybrid = HybridRetriever(bm25, vector)
+    app.state.hybrid_retriever = hybrid
+
+    # 5. 创建 LLM 客户端
+    llm = LLMClient()
+    app.state.llm_client = llm
+
+    knowledge_count = len(get_all_knowledge())
+    print(f"[Startup] Knowledge base: {knowledge_count} items")
+    print(f"[Startup] Mock mode: {settings.is_mock_mode}")
+    print(f"[Startup] Vector available: {hybrid.vector_available}")
+    print("=" * 50)
+    print("FitQA Backend Ready!")
+    print("=" * 50)
+
+    yield
+
+    print("[Shutdown] FitQA Backend shutting down.")
+
+
+app = FastAPI(
+    title="FitQA - 运动健身知识问答系统",
+    description="基于 BM25 + 向量检索的健身知识智能问答 API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS 跨域配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 注册路由
+app.include_router(ask_router, tags=["问答"])
+app.include_router(knowledge_router, tags=["知识库"])
+app.include_router(history_router, tags=["历史"])
+app.include_router(config_router, tags=["配置"])
+
+
+@app.get("/health", tags=["系统"])
+async def health():
+    """健康检查。"""
+    hybrid = app.state.hybrid_retriever
+    active_model = None
+    try:
+        from database import get_active_model
+        active = get_active_model()
+        if active:
+            active_model = {"name": active["name"], "model_name": active["model_name"]}
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "mock_mode": settings.is_mock_mode,
+        "vector_available": hybrid.vector_available,
+        "knowledge_count": len(get_all_knowledge()),
+        "active_model": active_model,
+    }
+
+
+# 托管前端静态文件（供 ngrok 单隧道对外服务）
+# 必须放在所有 API 路由之后，否则静态文件会拦截 API 请求
+from fastapi.staticfiles import StaticFiles
+_frontend_path = Path(__file__).parent.parent / "frontend"
+app.mount("/", StaticFiles(directory=str(_frontend_path), html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=False,
+    )
