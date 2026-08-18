@@ -2,12 +2,15 @@
 
 from typing import List, Dict
 import pickle
+import logging
 from pathlib import Path
 
 import jieba
 from rank_bm25 import BM25Okapi
 
 from data.knowledge_base import get_knowledge_texts
+
+logger = logging.getLogger("fitqa.bm25")
 
 
 class BM25Retriever:
@@ -27,7 +30,7 @@ class BM25Retriever:
         self.texts = get_knowledge_texts()
         tokenized = [list(jieba.cut(text)) for text in self.texts]
         self.bm25 = BM25Okapi(tokenized)
-        print(f"[BM25] Index rebuilt: {len(self.items)} documents")
+        logger.info(f"[BM25] Index rebuilt: {len(self.items)} documents")
 
     def search(self, query: str, top_k: int = 5) -> List[Dict]:
         """

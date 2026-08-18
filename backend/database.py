@@ -38,14 +38,50 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS llm_models (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
             base_url TEXT NOT NULL,
             api_key_encrypted TEXT NOT NULL,
             model_name TEXT NOT NULL,
             is_active INTEGER DEFAULT 0,
+            user_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 迁移：旧库无 user_id 列时补充（NULL 表示全局模型）
+    try:
+        cursor.execute("ALTER TABLE llm_models ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+
+    # 迁移：移除 name 的全局 UNIQUE，改为 (user_id, name) 唯一，允许不同用户/全局同名
+    indexes = cursor.execute("PRAGMA index_list(llm_models)").fetchall()
+    if any(idx[1].startswith("sqlite_autoindex_llm_models") for idx in indexes):
+        cursor.execute("""
+            CREATE TABLE llm_models_mig (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key_encrypted TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                is_active INTEGER DEFAULT 0,
+                user_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            """
+            INSERT INTO llm_models_mig (id, name, base_url, api_key_encrypted, model_name, is_active, user_id, created_at)
+            SELECT id, name, base_url, api_key_encrypted, model_name, is_active, user_id, created_at FROM llm_models
+            """
+        )
+        cursor.execute("DROP TABLE llm_models")
+        cursor.execute("ALTER TABLE llm_models_mig RENAME TO llm_models")
+
+    # (user_id, name) 唯一索引；不同用户或全局与个人可同名
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_llm_models_user_name ON llm_models(user_id, name)"
+    )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_entries (
@@ -59,6 +95,83 @@ def init_db():
             tags TEXT DEFAULT '[]',
             import_mode TEXT DEFAULT 'direct',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '新对话',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            sources TEXT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS unanswered_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'hybrid',
+            reason TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_llm_config (
+            user_id INTEGER PRIMARY KEY,
+            base_url TEXT NOT NULL DEFAULT '',
+            api_key_encrypted TEXT NOT NULL DEFAULT '',
+            model_name TEXT NOT NULL DEFAULT '',
+            mode TEXT NOT NULL DEFAULT 'mock',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            exercise_type TEXT NOT NULL,
+            duration INTEGER DEFAULT 0,
+            intensity TEXT DEFAULT '中等',
+            notes TEXT DEFAULT '',
+            record_date TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -138,13 +251,24 @@ def delete_history_batch(ids: List[int]) -> int:
     return deleted
 
 
-# ==================== LLM 模型管理 ====================
+# ==================== LLM 模型管理（按用户隔离，user_id=None 为全局） ====================
 
-def get_all_models() -> List[Dict]:
-    """获取所有已保存的 LLM 模型（API Key 脱敏）。"""
+def _model_scope(user_id: Optional[int]):
+    """返回模型表按用户过滤的 SQL 片段与参数。None 表示全局模型。"""
+    if user_id is None:
+        return "user_id IS NULL", ()
+    return "user_id = ?", (user_id,)
+
+
+def get_all_models(user_id: Optional[int] = None) -> List[Dict]:
+    """获取指定范围的 LLM 模型列表（API Key 脱敏）。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models ORDER BY id")
+    where, params = _model_scope(user_id)
+    cursor.execute(
+        f"SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models WHERE {where} ORDER BY id",
+        params,
+    )
     rows = cursor.fetchall()
     conn.close()
     return [
@@ -160,11 +284,15 @@ def get_all_models() -> List[Dict]:
     ]
 
 
-def get_active_model() -> Optional[Dict]:
-    """获取当前激活的模型（含加密 key）。"""
+def get_active_model(user_id: Optional[int] = None) -> Optional[Dict]:
+    """获取指定范围当前激活的模型（含加密 key）。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models WHERE is_active = 1 LIMIT 1")
+    where, params = _model_scope(user_id)
+    cursor.execute(
+        f"SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models WHERE is_active = 1 AND {where} LIMIT 1",
+        params,
+    )
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -179,11 +307,15 @@ def get_active_model() -> Optional[Dict]:
     return None
 
 
-def get_model_by_id(model_id: int) -> Optional[Dict]:
-    """根据 ID 获取模型（含加密 key）。"""
+def get_model_by_id(model_id: int, user_id: Optional[int] = None) -> Optional[Dict]:
+    """根据 ID 获取指定范围模型（含加密 key）。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models WHERE id = ?", (model_id,))
+    where, params = _model_scope(user_id)
+    cursor.execute(
+        f"SELECT id, name, base_url, api_key_encrypted, model_name, is_active FROM llm_models WHERE id = ? AND {where}",
+        (model_id,) + params,
+    )
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -198,67 +330,62 @@ def get_model_by_id(model_id: int) -> Optional[Dict]:
     return None
 
 
-def add_model(name: str, base_url: str, api_key_encrypted: str, model_name: str) -> int:
+def add_model(name: str, base_url: str, api_key_encrypted: str, model_name: str, user_id: Optional[int] = None) -> int:
     """添加新模型，自动设为激活。返回新模型 ID。"""
     conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute("UPDATE llm_models SET is_active = 0")
-
+    where, params = _model_scope(user_id)
+    cursor.execute(f"UPDATE llm_models SET is_active = 0 WHERE {where}", params)
     cursor.execute(
-        "INSERT INTO llm_models (name, base_url, api_key_encrypted, model_name, is_active) VALUES (?, ?, ?, ?, 1)",
-        (name, base_url, api_key_encrypted, model_name)
+        "INSERT INTO llm_models (name, base_url, api_key_encrypted, model_name, is_active, user_id) VALUES (?, ?, ?, ?, 1, ?)",
+        (name, base_url, api_key_encrypted, model_name, user_id)
     )
     model_id = cursor.lastrowid
-
     conn.commit()
     conn.close()
     return model_id
 
 
-def set_active_model(model_id: int) -> bool:
-    """切换激活模型。成功返回 True。"""
+def set_active_model(model_id: int, user_id: Optional[int] = None) -> bool:
+    """切换指定范围的激活模型。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute("SELECT id FROM llm_models WHERE id = ?", (model_id,))
+    where, params = _model_scope(user_id)
+    cursor.execute(f"SELECT id FROM llm_models WHERE id = ? AND {where}", (model_id,) + params)
     if not cursor.fetchone():
         conn.close()
         return False
-
-    cursor.execute("UPDATE llm_models SET is_active = 0")
+    cursor.execute(f"UPDATE llm_models SET is_active = 0 WHERE {where}", params)
     cursor.execute("UPDATE llm_models SET is_active = 1 WHERE id = ?", (model_id,))
     conn.commit()
     conn.close()
     return True
 
 
-def delete_model(model_id: int) -> bool:
-    """删除模型。成功返回 True。"""
+def delete_model(model_id: int, user_id: Optional[int] = None) -> bool:
+    """删除指定范围模型。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute("SELECT id FROM llm_models WHERE id = ?", (model_id,))
+    where, params = _model_scope(user_id)
+    cursor.execute(f"SELECT id FROM llm_models WHERE id = ? AND {where}", (model_id,) + params)
     if not cursor.fetchone():
         conn.close()
         return False
-
     cursor.execute("DELETE FROM llm_models WHERE id = ?", (model_id,))
     conn.commit()
     conn.close()
     return True
 
 
-def update_model(model_id: int, name: str, base_url: str, api_key_encrypted: str, model_name: str) -> bool:
-    """更新模型信息。成功返回 True。"""
+def update_model(model_id: int, name: str, base_url: str, api_key_encrypted: str, model_name: str, user_id: Optional[int] = None) -> bool:
+    """更新指定范围模型信息。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute("SELECT id FROM llm_models WHERE id = ?", (model_id,))
+    where, params = _model_scope(user_id)
+    cursor.execute(f"SELECT id FROM llm_models WHERE id = ? AND {where}", (model_id,) + params)
     if not cursor.fetchone():
         conn.close()
         return False
-
     cursor.execute(
         "UPDATE llm_models SET name = ?, base_url = ?, api_key_encrypted = ?, model_name = ? WHERE id = ?",
         (name, base_url, api_key_encrypted, model_name, model_id)
@@ -498,3 +625,332 @@ def find_similar_entries(title: str, content: str, threshold: float = 0.85) -> L
                 "similarity": round(ratio, 4),
             })
     return similar
+
+
+# ==================== 用户认证 ====================
+
+def create_user(username: str, password_hash: str) -> Optional[int]:
+    """创建用户。用户名重复返回 None。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, password_hash),
+        )
+        uid = cursor.lastrowid
+        conn.commit()
+        return uid
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def get_user_by_username(username: str) -> Optional[Dict]:
+    """根据用户名获取用户。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, password_hash, created_at FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def create_auth_token(user_id: int) -> str:
+    """为用户生成登录令牌。"""
+    import secrets
+    token = secrets.token_hex(32)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO auth_tokens (token, user_id) VALUES (?, ?)", (token, user_id))
+    conn.commit()
+    conn.close()
+    return token
+
+
+def get_user_by_token(token: str) -> Optional[Dict]:
+    """根据令牌获取用户（无效返回 None）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT u.id, u.username FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?",
+        (token,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row["id"], "username": row["username"]}
+
+
+def delete_auth_token(token: str) -> bool:
+    """删除登录令牌（退出登录）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ==================== 多轮会话 ====================
+
+def create_chat_session(user_id: int, title: str = "新对话") -> int:
+    """创建会话，返回会话 ID。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO chat_sessions (user_id, title) VALUES (?, ?)",
+        (user_id, title),
+    )
+    sid = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return sid
+
+
+def list_chat_sessions(user_id: int) -> List[Dict]:
+    """获取用户的所有会话（按更新时间倒序）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, title, created_at, updated_at,
+                  (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = chat_sessions.id) AS message_count
+           FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC""",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "message_count": row["message_count"],
+        }
+        for row in rows
+    ]
+
+
+def get_chat_session(user_id: int, session_id: int) -> Optional[Dict]:
+    """获取属于该用户的会话。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def update_chat_session_title(session_id: int, title: str) -> bool:
+    """更新会话标题（仅在需要时调用）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title[:100], session_id))
+    changed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def delete_chat_session(user_id: int, session_id: int) -> bool:
+    """删除会话（同时删除消息）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+    if not cursor.fetchone():
+        conn.close()
+        return False
+    cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+    cursor.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def add_chat_message(session_id: int, role: str, content: str, sources: str = None) -> int:
+    """追加一条会话消息，并刷新会话更新时间。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO chat_messages (session_id, role, content, sources) VALUES (?, ?, ?, ?)",
+        (session_id, role, content, sources),
+    )
+    mid = cursor.lastrowid
+    cursor.execute("UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+    return mid
+
+
+def list_chat_messages(session_id: int) -> List[Dict]:
+    """获取会话的全部消息。"""
+    import json as _json
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, role, content, sources, created_at FROM chat_messages WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    messages = []
+    for row in rows:
+        try:
+            sources = _json.loads(row["sources"]) if row["sources"] else []
+        except Exception:
+            sources = []
+        messages.append({
+            "id": row["id"],
+            "role": row["role"],
+            "content": row["content"],
+            "sources": sources,
+            "created_at": row["created_at"],
+        })
+    return messages
+
+
+# ==================== 无法回答问题记录 ====================
+
+def record_unanswered_question(question: str, mode: str = "hybrid", reason: str = ""):
+    """记录无法回答的问题（无检索结果或分数过低）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO unanswered_questions (question, mode, reason) VALUES (?, ?, ?)",
+        (question, mode, reason),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_unanswered_questions(limit: int = 100) -> List[Dict]:
+    """获取无法回答的问题记录。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, question, mode, reason, created_at FROM unanswered_questions ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def clear_unanswered_questions() -> int:
+    """清空无法回答问题记录。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM unanswered_questions")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ==================== 每用户 LLM 配置 ====================
+
+def get_user_llm_config(user_id: int) -> Optional[Dict]:
+    """获取指定用户的 LLM 配置（无则返回 None）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT base_url, api_key_encrypted, model_name, mode FROM user_llm_config WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)
+
+
+def save_user_llm_config(user_id: int, base_url: str, api_key_encrypted: str, model_name: str, mode: str):
+    """保存/更新用户的 LLM 配置。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO user_llm_config (user_id, base_url, api_key_encrypted, model_name, mode, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            base_url=excluded.base_url,
+            api_key_encrypted=excluded.api_key_encrypted,
+            model_name=excluded.model_name,
+            mode=excluded.mode,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (user_id, base_url, api_key_encrypted, model_name, mode),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_mode(user_id: int) -> str:
+    """获取用户的运行模式（默认 mock）。"""
+    cfg = get_user_llm_config(user_id)
+    mode = (cfg or {}).get("mode")
+    return mode if mode in ("mock", "real") else "mock"
+
+
+def set_user_mode(user_id: int, mode: str):
+    """设置用户的运行模式。"""
+    if mode not in ("mock", "real"):
+        mode = "mock"
+    save_user_llm_config(user_id, "", "", "", mode)
+
+
+# ==================== 运动记录 ====================
+
+def add_exercise_record(user_id: int, exercise_type: str, duration: int = 0,
+                        intensity: str = "中等", notes: str = "", record_date: str = "") -> int:
+    """添加运动记录，返回记录 ID。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO exercise_records (user_id, exercise_type, duration, intensity, notes, record_date)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (user_id, exercise_type, duration, intensity, notes, record_date),
+    )
+    rid = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return rid
+
+
+def list_exercise_records(user_id: int, limit: int = 10) -> List[Dict]:
+    """获取用户最近的运动记录（按日期/ID 倒序）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, exercise_type, duration, intensity, notes, record_date, created_at
+           FROM exercise_records
+           WHERE user_id = ?
+           ORDER BY record_date DESC, id DESC
+           LIMIT ?""",
+        (user_id, limit),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def delete_exercise_record(user_id: int, record_id: int) -> bool:
+    """删除指定用户的运动记录。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM exercise_records WHERE id = ? AND user_id = ?",
+        (record_id, user_id),
+    )
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted

@@ -2,10 +2,13 @@
 
 import os
 import shutil
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Query
+
+logger = logging.getLogger("fitqa.knowledge")
 
 from models import KnowledgeItem, CategoryInfo, ImportResponse, DynamicEntryItem, CreateEntryRequest, UpdateEntryRequest
 from data.knowledge_base import get_all_knowledge, get_categories
@@ -22,6 +25,10 @@ from database import (
 )
 from parsers import parse_file
 from parsers.splitter import split_by_title, split_by_paragraph, split_by_length, split_by_llm, split_by_none, reset_counter
+from api.auth import require_user
+
+from models import UnansweredItem
+from database import list_unanswered_questions, clear_unanswered_questions
 
 router = APIRouter()
 
@@ -55,7 +62,7 @@ async def import_knowledge(
     source: str = Form(""),
 ):
     """
-    导入文档到知识库（支持多文件）。
+    导入文档到知识库（支持多文件，需登录）。
 
     - files: 上传的文件列表 (PDF/Word/TXT)
     - mode: direct=直接导入, llm=LLM智能拆分
@@ -64,6 +71,7 @@ async def import_knowledge(
     - url: 来源链接（可选，应用到所有导入条目）
     - source: 自定义来源（可选，默认使用文档名）
     """
+    require_user(request)
     total_added = 0
     total_skipped_dup = 0
     skipped_files = []
@@ -164,7 +172,7 @@ async def import_knowledge(
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
     except Exception as e:
-        print(f"[Import] Index rebuild failed: {e}")
+        logger.warning(f"[Import] Index rebuild failed: {e}")
 
     if not messages and skipped_files:
         return ImportResponse(
@@ -195,7 +203,8 @@ async def list_dynamic_entries():
 
 @router.delete("/knowledge/entries/{entry_id}")
 async def delete_dynamic_entry(entry_id: str, request: Request, rebuild: bool = Query(True)):
-    """删除单条动态知识。rebuild=False 时跳过索引重建。"""
+    """删除单条动态知识（需登录）。rebuild=False 时跳过索引重建。"""
+    require_user(request)
     success = delete_entry(entry_id)
     if not success:
         raise HTTPException(status_code=404, detail="条目不存在")
@@ -205,7 +214,7 @@ async def delete_dynamic_entry(entry_id: str, request: Request, rebuild: bool = 
             hybrid = request.app.state.hybrid_retriever
             hybrid.rebuild_all()
         except Exception as e:
-            print(f"[Delete] Index rebuild failed: {e}")
+            logger.warning(f"[Delete] Index rebuild failed: {e}")
         return {"status": "ok", "message": "条目已删除，索引已重建"}
 
     return {"status": "ok", "message": "条目已删除（未重建索引，可稍后手动重建）"}
@@ -213,7 +222,8 @@ async def delete_dynamic_entry(entry_id: str, request: Request, rebuild: bool = 
 
 @router.post("/knowledge/rebuild-index")
 async def rebuild_index(request: Request):
-    """手动重建检索索引。"""
+    """手动重建检索索引（需登录）。"""
+    require_user(request)
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
@@ -225,7 +235,8 @@ async def rebuild_index(request: Request):
 
 @router.post("/knowledge/entries")
 async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
-    """手动新增知识条目。split_enabled=True 时按 split_method 拆分内容为多条。"""
+    """手动新增知识条目（需登录）。split_enabled=True 时按 split_method 拆分内容为多条。"""
+    require_user(request)
     import json
     tags_str = json.dumps(entry.tags, ensure_ascii=False) if entry.tags else "[]"
 
@@ -245,7 +256,7 @@ async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
                 try:
                     entries = await split_by_llm(entry.content, entry.source, llm_client)
                 except Exception as e:
-                    print(f"[Create] LLM split failed: {e}")
+                    logger.warning(f"[Create] LLM split failed: {e}")
                     entries = split_by_paragraph(entry.content, entry.source, entry.category)
         else:
             entries = split_by_title(entry.content, entry.source, entry.category)
@@ -272,7 +283,7 @@ async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
     except Exception as e:
-        print(f"[Create] Index rebuild failed: {e}")
+        logger.warning(f"[Create] Index rebuild failed: {e}")
 
     return {"status": "ok", "entry_id": entry_id, "message": message}
 
@@ -280,11 +291,12 @@ async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
 @router.put("/knowledge/entries/batch")
 async def update_knowledge_entries_batch(request: Request):
     """
-    批量更新知识条目的公共字段（分类/来源/链接/标签）。
+    批量更新知识条目的公共字段（分类/来源/链接/标签，需登录）。
 
     请求体: {"entry_ids": ["DOC001", ...], "category": "...", "source": "...", "url": "...", "tags": [...]}
     仅更新提供的字段；静态内置条目（KB 开头）不可修改。
     """
+    require_user(request)
     import json
     body = await request.json()
     entry_ids = body.get("entry_ids") or []
@@ -317,14 +329,15 @@ async def update_knowledge_entries_batch(request: Request):
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
     except Exception as e:
-        print(f"[BatchUpdate] Index rebuild failed: {e}")
+        logger.warning(f"[BatchUpdate] Index rebuild failed: {e}")
 
     return {"status": "ok", "message": f"已批量更新 {updated} 条知识", "updated": updated}
 
 
 @router.put("/knowledge/entries/{entry_id}")
 async def update_knowledge_entry(entry_id: str, entry: UpdateEntryRequest, request: Request):
-    """编辑知识条目。"""
+    """编辑知识条目（需登录）。"""
+    require_user(request)
     import json
     existing = get_entry_by_id(entry_id)
     if not existing:
@@ -348,6 +361,21 @@ async def update_knowledge_entry(entry_id: str, entry: UpdateEntryRequest, reque
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
     except Exception as e:
-        print(f"[Update] Index rebuild failed: {e}")
+        logger.warning(f"[Update] Index rebuild failed: {e}")
 
     return {"status": "ok", "message": "知识条目已更新"}
+
+
+@router.get("/knowledge/unanswered", response_model=list[UnansweredItem])
+async def get_unanswered_questions(request: Request):
+    """获取无法回答的问题记录（需登录）。"""
+    require_user(request)
+    return list_unanswered_questions()
+
+
+@router.delete("/knowledge/unanswered")
+async def clear_unanswered(request: Request):
+    """清空无法回答问题记录（需登录）。"""
+    require_user(request)
+    cleared = clear_unanswered_questions()
+    return {"status": "ok", "message": f"已清空 {cleared} 条记录"}

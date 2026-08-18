@@ -2,10 +2,11 @@
 
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from models import HistoryRecord
+from api.auth import require_user
 from database import get_history, clear_history, delete_history, delete_history_batch
 
 router = APIRouter()
@@ -17,8 +18,9 @@ class BatchDeleteRequest(BaseModel):
 
 
 @router.get("/history", response_model=list[HistoryRecord])
-async def history_list():
-    """获取近 50 条问答历史。"""
+async def history_list(request: Request):
+    """获取近 50 条问答历史（需登录）。"""
+    require_user(request)
     records = get_history(limit=50)
     return [
         HistoryRecord(
@@ -34,8 +36,9 @@ async def history_list():
 
 
 @router.delete("/history/{history_id}")
-async def history_delete(history_id: int):
-    """删除单条问答历史。"""
+async def history_delete(history_id: int, request: Request):
+    """删除单条问答历史（需登录）。"""
+    require_user(request)
     success = delete_history(history_id)
     if not success:
         raise HTTPException(status_code=404, detail="历史记录不存在")
@@ -43,10 +46,12 @@ async def history_delete(history_id: int):
 
 
 @router.delete("/history")
-async def history_clear(ids: List[int] = None):
+async def history_clear(ids: List[int] = None, request: Request = None):
     """
-    清空所有问答历史；若传入 ids 则批量删除指定记录。
+    清空所有问答历史；若传入 ids 则批量删除指定记录（需登录）。
     """
+    if request is not None:
+        require_user(request)
     if ids:
         deleted = delete_history_batch(ids)
         return {"status": "ok", "message": f"已删除 {deleted} 条历史记录", "deleted": deleted}

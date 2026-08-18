@@ -7,6 +7,8 @@ FitQA - 运动健身知识问答系统后端入口。
 """
 
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 # 使用 HuggingFace 国内镜像，解决模型下载超时问题
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -27,22 +29,56 @@ from api.ask import router as ask_router
 from api.knowledge import router as knowledge_router
 from api.history import router as history_router
 from api.config import router as config_router
+from api.auth import router as auth_router
+from api.sessions import router as sessions_router
+from api.exercise import router as exercise_router
+
+logger = logging.getLogger("fitqa")
+
+LOGS_DIR = Path(__file__).parent / "logs"
+LOGS_DIR.mkdir(exist_ok=True)
+
+
+def setup_logging():
+    """配置控制台 + 文件日志（backend/logs/fitqa.log）。"""
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    ch = logging.StreamHandler()
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+
+    fh = RotatingFileHandler(
+        LOGS_DIR / "fitqa.log",
+        maxBytes=2 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    # 避免 httpx 每次请求都写日志
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+setup_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时构建索引，关闭时清理资源。"""
-    print("=" * 50)
-    print("FitQA Backend Starting...")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("FitQA Backend Starting...")
+    logger.info("=" * 50)
 
     # 0. 初始化加密密钥
     settings.get_or_create_encryption_key()
-    print("[Startup] Encryption key ready.")
+    logger.info("[Startup] Encryption key ready.")
 
     # 1. 初始化数据库
     init_db()
-    print("[Startup] Database initialized.")
+    logger.info("[Startup] Database initialized.")
 
     # 1.5 应用数据库中的激活模型配置（覆盖 .env，保证重启后生效）
     try:
@@ -56,20 +92,20 @@ async def lifespan(app: FastAPI):
                 model_name=active["model_name"],
             )
             settings.update_mode("real")
-            print(f"[Startup] Applied active model: {active['name']} ({active['model_name']})")
+            logger.info(f"[Startup] Applied active model: {active['name']} ({active['model_name']})")
         else:
-            print("[Startup] No active model in DB, using .env config.")
+            logger.info("[Startup] No active model in DB, using .env config.")
     except Exception as e:
-        print(f"[Startup] Failed to apply active model (key may be invalid): {e}")
-        print("[Startup] Falling back to .env config.")
+        logger.warning(f"[Startup] Failed to apply active model (key may be invalid): {e}")
+        logger.info("[Startup] Falling back to .env config.")
 
     # 2. 构建 BM25 索引
-    print("[Startup] Building BM25 index...")
+    logger.info("[Startup] Building BM25 index...")
     bm25 = BM25Retriever()
-    print(f"[Startup] BM25 index ready ({len(bm25.texts)} documents).")
+    logger.info(f"[Startup] BM25 index ready ({len(bm25.texts)} documents).")
 
     # 3. 构建向量索引（失败自动降级）
-    print("[Startup] Building Vector (FAISS) index...")
+    logger.info("[Startup] Building Vector (FAISS) index...")
     vector = VectorRetriever()
 
     # 4. 创建混合检索器
@@ -81,16 +117,17 @@ async def lifespan(app: FastAPI):
     app.state.llm_client = llm
 
     knowledge_count = len(get_all_knowledge())
-    print(f"[Startup] Knowledge base: {knowledge_count} items")
-    print(f"[Startup] Mock mode: {settings.is_mock_mode}")
-    print(f"[Startup] Vector available: {hybrid.vector_available}")
-    print("=" * 50)
-    print("FitQA Backend Ready!")
-    print("=" * 50)
+    logger.info(f"[Startup] Knowledge base: {knowledge_count} items")
+    logger.info(f"[Startup] Mock mode: {settings.is_mock_mode}")
+    logger.info(f"[Startup] Vector available: {hybrid.vector_available}")
+    logger.info(f"[Startup] Rerank available: {hybrid.rerank_available}")
+    logger.info("=" * 50)
+    logger.info("FitQA Backend Ready!")
+    logger.info("=" * 50)
 
     yield
 
-    print("[Shutdown] FitQA Backend shutting down.")
+    logger.info("[Shutdown] FitQA Backend shutting down.")
 
 
 app = FastAPI(
@@ -114,6 +151,9 @@ app.include_router(ask_router, tags=["问答"])
 app.include_router(knowledge_router, tags=["知识库"])
 app.include_router(history_router, tags=["历史"])
 app.include_router(config_router, tags=["配置"])
+app.include_router(auth_router, tags=["用户"])
+app.include_router(sessions_router, tags=["会话"])
+app.include_router(exercise_router, tags=["运动记录"])
 
 
 @app.get("/health", tags=["系统"])
@@ -133,6 +173,7 @@ async def health():
         "version": "1.0.0",
         "mock_mode": settings.is_mock_mode,
         "vector_available": hybrid.vector_available,
+        "rerank_available": hybrid.rerank_available,
         "knowledge_count": len(get_all_knowledge()),
         "active_model": active_model,
     }

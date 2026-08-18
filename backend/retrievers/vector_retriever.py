@@ -4,9 +4,15 @@
 """
 
 from typing import List, Dict, Tuple, Optional
+import logging
 import numpy as np
 
 from data.knowledge_base import get_knowledge_texts
+
+logger = logging.getLogger("fitqa.vector")
+
+# 向量相似度阈值：低于该值的片段视为"不相关"，过滤掉（用于"无法回答"提示）
+MIN_VECTOR_SCORE = 0.30
 
 
 class VectorRetriever:
@@ -33,14 +39,14 @@ class VectorRetriever:
             from sentence_transformers import SentenceTransformer
             import faiss
 
-            print("[VectorRetriever] Loading sentence-transformers model...")
-            print("[VectorRetriever] Model download may take a few minutes on first run...")
+            logger.info("[VectorRetriever] Loading sentence-transformers model...")
+            logger.info("[VectorRetriever] Model download may take a few minutes on first run...")
             # 使用轻量中文模型
             self.model = SentenceTransformer(
                 "shibing624/text2vec-base-chinese",
                 device="cpu"
             )
-            print("[VectorRetriever] Model loaded, building FAISS index...")
+            logger.info("[VectorRetriever] Model loaded, building FAISS index...")
 
             embeddings = self.model.encode(
                 self.texts,
@@ -53,10 +59,10 @@ class VectorRetriever:
             self.index.add(embeddings.astype(np.float32))
 
             self.available = True
-            print(f"[VectorRetriever] FAISS index ready with {self.index.ntotal} vectors")
+            logger.info(f"[VectorRetriever] FAISS index ready with {self.index.ntotal} vectors")
         except Exception as e:
-            print(f"[VectorRetriever] Failed to load model/FAISS: {e}")
-            print("[VectorRetriever] Falling back to BM25-only mode.")
+            logger.warning(f"[VectorRetriever] Failed to load model/FAISS: {e}")
+            logger.warning("[VectorRetriever] Falling back to BM25-only mode.")
             self.available = False
 
     def rebuild_index(self):
@@ -74,11 +80,13 @@ class VectorRetriever:
         )
         self.index.reset()
         self.index.add(embeddings.astype(np.float32))
-        print(f"[Vector] Index rebuilt: {len(self.items)} vectors")
+        logger.info(f"[Vector] Index rebuilt: {len(self.items)} vectors")
 
     def search(self, query: str, top_k: int = 5) -> List[Dict]:
         """
         语义检索，返回 top_k 条结果。
+
+        相似度低于 MIN_VECTOR_SCORE 的结果会被过滤（视为无相关内容）。
 
         Returns:
             [{"id", "title", "category", "content", "score", "snippet"}, ...]
@@ -86,16 +94,21 @@ class VectorRetriever:
         if not self.available or self.model is None or self.index is None:
             return []
 
+        if not query or not query.strip():
+            return []
+
         query_vec = self.model.encode(
             [query],
             normalize_embeddings=True
         ).astype(np.float32)
 
-        scores, indices = self.index.search(query_vec, top_k)
+        scores, indices = self.index.search(query_vec, top_k * 2)
         results = []
 
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self.items):
+                continue
+            if float(score) < MIN_VECTOR_SCORE:
                 continue
             item = self.items[idx]
             content = item["content"]
@@ -109,5 +122,7 @@ class VectorRetriever:
                 "snippet": snippet,
                 "url": item.get("url", ""),
             })
+            if len(results) >= top_k:
+                break
 
         return results

@@ -2,8 +2,11 @@
 
 import re
 import json
+import logging
 from typing import List, Dict
 from pathlib import Path
+
+logger = logging.getLogger("fitqa.splitter")
 
 
 # 分类关键词映射表
@@ -352,7 +355,7 @@ async def split_by_llm(text: str, source: str, llm_client, chunk_size: int = 150
             entries = _parse_llm_response(response, source)
             all_entries.extend(entries)
         except Exception as e:
-            print(f"[Splitter] LLM chunk {i+1} failed: {e}")
+            logger.warning(f"[Splitter] LLM chunk {i+1} failed: {e}")
             fallback = split_by_paragraph(chunk, source)
             all_entries.extend(fallback)
 

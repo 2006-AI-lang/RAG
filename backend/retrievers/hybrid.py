@@ -4,9 +4,13 @@ HybridRetriever 在应用启动时创建并缓存为全局单例。
 """
 
 from typing import List, Dict, Optional
+import logging
 
 from .bm25_retriever import BM25Retriever
 from .vector_retriever import VectorRetriever
+from .reranker import Reranker
+
+logger = logging.getLogger("fitqa.hybrid")
 
 
 def rrf_fusion(
@@ -88,14 +92,22 @@ class HybridRetriever:
     def __init__(self, bm25: BM25Retriever, vector: VectorRetriever):
         self.bm25 = bm25
         self.vector = vector
+        self.reranker = Reranker()
 
     @property
     def vector_available(self) -> bool:
         return self.vector.available
 
+    @property
+    def rerank_available(self) -> bool:
+        return self.reranker.available
+
     def search(self, query: str, mode: str = "hybrid", top_k: int = 5) -> tuple:
         """
         执行检索。
+
+        - 单模式（bm25/vector）：保持原始算法，供"检索对比"使用，不做重排序。
+        - hybrid 模式：BM25 + 向量召回 → RRF 融合 → 交叉编码器重排序 → top_k。
 
         Returns:
             (results, actual_mode): results 为 List[Dict], actual_mode 为实际使用的模式。
@@ -110,13 +122,15 @@ class HybridRetriever:
             return self.vector.search(query, top_k), "vector"
 
         # hybrid 模式
-        bm25_results = self.bm25.search(query, top_k=top_k * 2)
+        bm25_results = self.bm25.search(query, top_k=top_k * 4)
         actual_mode = "hybrid"
 
         if self.vector.available:
-            vector_results = self.vector.search(query, top_k=top_k * 2)
+            vector_results = self.vector.search(query, top_k=top_k * 4)
             if vector_results:
-                return rrf_fusion(bm25_results, vector_results, top_k=top_k), "hybrid"
+                fused = rrf_fusion(bm25_results, vector_results, top_k=top_k * 4)
+                # 重排序：对融合后的候选精排，取最终 top_k
+                return self.reranker.rerank(query, fused, top_k=top_k), "hybrid"
             else:
                 actual_mode = "bm25"
         else:
@@ -129,4 +143,4 @@ class HybridRetriever:
         self.bm25.rebuild_index()
         if self.vector.available:
             self.vector.rebuild_index()
-        print("[Hybrid] All indexes rebuilt")
+        logger.info("[Hybrid] All indexes rebuilt")

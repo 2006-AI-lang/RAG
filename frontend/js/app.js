@@ -17,7 +17,18 @@ const STATE = {
     categoriesCache: null,
     knowledgeSort: 'index',
     backendHealthy: false,
+    currentUser: null,
 };
+
+const TOKEN_KEY = 'fitqa_token';
+
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
+function isLoggedIn() { return !!STATE.currentUser; }
+function authHeaders(extra) {
+    const t = getToken();
+    return t ? Object.assign({}, extra, { Authorization: `Bearer ${t}` }) : (extra || {});
+}
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
@@ -27,9 +38,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     initSettings();
     initImport();
     initEntryModal();
+    initAuthUI();
+    initUnansweredUI();
+    initTrainingPlanUI();
+    initExerciseUI();
     await checkBackendHealth();
     if (STATE.backendHealthy) {
-        await Promise.all([initKnowledge(), initHistory()]);
+        await Promise.all([initKnowledge()]);
+        await initAuth();
     } else {
         initKnowledgeFallback();
         initHistoryFallback();
@@ -64,10 +80,381 @@ async function checkBackendHealth() {
     statusText.textContent = '离线';
 }
 
+// ==================== 用户认证 ====================
+async function initAuth() {
+    const token = getToken();
+    if (token && STATE.backendHealthy) {
+        try {
+            const resp = await fetch(`${API_BASE_URL}/auth/me`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (resp.ok) {
+                STATE.currentUser = await resp.json();
+            } else {
+                setToken(null);
+            }
+        } catch (e) {
+            setToken(null);
+        }
+    }
+    applyAuthState();
+    if (STATE.currentUser) {
+        await loadSessionsFromBackend();
+    } else {
+        STATE.sessions = [];
+        createSession();
+    }
+    renderSessionList();
+    renderMessages();
+    initHistory();
+    await refreshUserStatus();
+}
+
+function applyAuthState() {
+    const btnLogin = document.getElementById('btnLogin');
+    const userMenu = document.getElementById('userMenu');
+    const userName = document.getElementById('userName');
+    if (STATE.currentUser) {
+        if (btnLogin) btnLogin.classList.add('hidden');
+        if (userMenu) userMenu.classList.remove('hidden');
+        if (userName) userName.textContent = STATE.currentUser.username;
+    } else {
+        if (btnLogin) btnLogin.classList.remove('hidden');
+        if (userMenu) userMenu.classList.add('hidden');
+    }
+    // 若设置弹窗已打开，刷新其内容（全局/个人切换）
+    const settingsModal = document.getElementById('settingsModal');
+    if (settingsModal && settingsModal.classList.contains('active')) {
+        loadSettings();
+    }
+}
+
+async function refreshUserStatus() {
+    if (!isLoggedIn()) return;
+    try {
+        const resp = await fetch(`${API_BASE_URL}/config`, { headers: authHeaders() });
+        if (resp.ok) {
+            const cfg = await resp.json();
+            const statusText = document.getElementById('apiStatusText');
+            const statusDot = document.querySelector('.status-dot');
+            if (cfg.is_mock) {
+                if (statusText) statusText.textContent = '离线';
+                if (statusDot) statusDot.className = 'status-dot offline';
+            } else {
+                if (statusText) statusText.textContent = cfg.model_name || '大模型模式';
+                if (statusDot) statusDot.className = 'status-dot online';
+            }
+        }
+    } catch (e) { /* 忽略 */ }
+}
+
+function openLoginModal(tab = 'login') {
+    const modal = document.getElementById('loginModal');
+    if (!modal) return;
+    switchAuthTab(tab);
+    modal.classList.add('active');
+}
+
+function closeLoginModal() {
+    const modal = document.getElementById('loginModal');
+    if (modal) modal.classList.remove('active');
+}
+
+function switchAuthTab(tab) {
+    document.querySelectorAll('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.auth === tab));
+    const mode = tab === 'login' ? 'login' : 'register';
+    const submit = document.getElementById('btnAuthSubmit');
+    if (submit) submit.textContent = mode === 'login' ? '登录' : '注册';
+    const title = document.getElementById('loginModalTitle');
+    if (title) title.textContent = mode === 'login' ? '登录' : '注册';
+}
+
+async function handleAuthSubmit() {
+    const activeTab = document.querySelector('.auth-tab.active');
+    const mode = activeTab && activeTab.dataset.auth === 'register' ? 'register' : 'login';
+    const username = document.getElementById('authUsername').value.trim();
+    const password = document.getElementById('authPassword').value;
+
+    if (!username || !password) {
+        showToast('请输入用户名和密码', 'error');
+        return;
+    }
+    if (password.length < 6) {
+        showToast('密码长度至少 6 位', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btnAuthSubmit');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = '提交中...';
+    try {
+        const resp = await fetch(`${API_BASE_URL}/auth/${mode}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            showToast(data.detail || (mode === 'login' ? '登录失败' : '注册失败'), 'error');
+            return;
+        }
+        setToken(data.token);
+        STATE.currentUser = { id: data.user_id, username: data.username };
+        closeLoginModal();
+        applyAuthState();
+        showToast(mode === 'login' ? '登录成功' : '注册成功，已自动登录', 'success');
+        await loadSessionsFromBackend();
+        renderSessionList();
+        renderMessages();
+        initHistory();
+        await refreshUserStatus();
+    } catch (e) {
+        showToast(`请求失败: ${e.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+    }
+}
+
+async function handleLogout() {
+    const token = getToken();
+    if (token && STATE.backendHealthy) {
+        try {
+            await fetch(`${API_BASE_URL}/auth/logout`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        } catch (e) { /* 忽略 */ }
+    }
+    setToken(null);
+    STATE.currentUser = null;
+    applyAuthState();
+    STATE.sessions = [];
+    createSession();
+    renderSessionList();
+    renderMessages();
+    initHistory();
+    if (STATE.backendHealthy) checkBackendHealth();
+    showToast('已退出登录', 'info');
+}
+
+function requireLogin(fn) {
+    if (!isLoggedIn()) {
+        showToast('请先登录后使用该功能', 'error');
+        openLoginModal();
+        return false;
+    }
+    if (fn) fn();
+    return true;
+}
+
+function initAuthUI() {
+    const btnLogin = document.getElementById('btnLogin');
+    const btnLogout = document.getElementById('btnLogout');
+    const btnCloseLogin = document.getElementById('btnCloseLogin');
+    const btnAuthSubmit = document.getElementById('btnAuthSubmit');
+    const loginModal = document.getElementById('loginModal');
+
+    if (btnLogin) btnLogin.addEventListener('click', () => openLoginModal('login'));
+    if (btnLogout) btnLogout.addEventListener('click', handleLogout);
+    if (btnCloseLogin) btnCloseLogin.addEventListener('click', closeLoginModal);
+    if (btnAuthSubmit) btnAuthSubmit.addEventListener('click', handleAuthSubmit);
+    if (loginModal) {
+        loginModal.addEventListener('click', (e) => {
+            if (e.target === loginModal) closeLoginModal();
+        });
+        const pwd = document.getElementById('authPassword');
+        if (pwd) pwd.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleAuthSubmit(); });
+    }
+
+    document.querySelectorAll('.auth-tab').forEach(tab => {
+        tab.addEventListener('click', () => switchAuthTab(tab.dataset.auth));
+    });
+}
+
+// ==================== 无法回答问题（需登录） ====================
+function initUnansweredUI() {
+    const btn = document.getElementById('btnUnanswered');
+    const btnClose = document.getElementById('btnCloseUnanswered');
+    const btnClear = document.getElementById('btnClearUnanswered');
+    const modal = document.getElementById('unansweredModal');
+
+    if (btn) btn.addEventListener('click', () => requireLogin(openUnansweredModal));
+    if (btnClose) btnClose.addEventListener('click', () => modal && modal.classList.remove('active'));
+    if (btnClear) btnClear.addEventListener('click', clearUnansweredQuestions);
+    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
+}
+
+async function openUnansweredModal() {
+    const modal = document.getElementById('unansweredModal');
+    if (!modal) return;
+    modal.classList.add('active');
+    const list = document.getElementById('unansweredList');
+    const countEl = document.getElementById('unansweredCount');
+    list.innerHTML = '<div class="history-empty"><p>加载中...</p></div>';
+    try {
+        const data = await apiGet('/knowledge/unanswered');
+        if (countEl) countEl.textContent = `共 ${data.length} 条`;
+        if (!data || data.length === 0) {
+            list.innerHTML = '<div class="history-empty"><p>暂无无法回答的问题记录</p></div>';
+            return;
+        }
+        list.innerHTML = data.map(q => `
+            <div class="unanswered-item">
+                <div class="unanswered-q">${escapeHtml(q.question)}</div>
+                <div class="unanswered-meta">模式：${q.mode} · 原因：${escapeHtml(q.reason || '未知')} · ${formatTime(new Date(q.created_at || Date.now()))}</div>
+            </div>
+        `).join('');
+    } catch (e) {
+        list.innerHTML = '<div class="history-empty"><p>加载失败</p></div>';
+    }
+}
+
+async function clearUnansweredQuestions() {
+    if (!confirm('确定清空所有无法回答的问题记录吗？')) return;
+    try {
+        const data = await apiDelete('/knowledge/unanswered');
+        showToast(data.message || '已清空', 'success');
+        openUnansweredModal();
+    } catch (e) {
+        showToast('清空失败', 'error');
+    }
+}
+
+// ==================== 训练计划生成 ====================
+function initTrainingPlanUI() {
+    const btnOpen = document.getElementById('btnTrainingPlan');
+    const btnClose = document.getElementById('btnCloseTrainingPlan');
+    const btnGenerate = document.getElementById('btnGeneratePlan');
+    const modal = document.getElementById('trainingPlanModal');
+
+    if (btnOpen) btnOpen.addEventListener('click', () => {
+        if (!isLoggedIn()) {
+            showToast('请先登录后再使用训练计划', 'error');
+            openLoginModal();
+            return;
+        }
+        if (modal) {
+            document.getElementById('planGoal').value = '';
+            document.getElementById('planLevel').value = '新手';
+            document.getElementById('planDays').value = '4';
+            // 用知识库分类填充 datalist
+            const dl = document.getElementById('planGoalList');
+            if (dl) {
+                const cats = (STATE.categoriesCache || []).map(c => c.category);
+                dl.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">`).join('');
+            }
+            modal.classList.add('active');
+        }
+    });
+    if (btnClose) btnClose.addEventListener('click', () => modal && modal.classList.remove('active'));
+    if (btnGenerate) btnGenerate.addEventListener('click', generateTrainingPlan);
+    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
+}
+
+function generateTrainingPlan() {
+    const goal = document.getElementById('planGoal')?.value || '增肌';
+    const level = document.getElementById('planLevel')?.value || '新手';
+    const days = document.getElementById('planDays')?.value || '4';
+    const question = `我是${level}，目标是${goal}，每周可以训练 ${days} 天。请根据知识库内容，为我制定一份一周训练计划，包含：每日训练部位、具体动作、每组次数与组数、组间休息和注意事项，并标注参考资料编号。`;
+
+    const modal = document.getElementById('trainingPlanModal');
+    if (modal) modal.classList.remove('active');
+
+    const input = document.getElementById('chatInput');
+    if (input) input.value = question;
+    handleSendMessage();
+}
+
+// ==================== 运动记录 ====================
+function initExerciseUI() {
+    const btnOpen = document.getElementById('btnExerciseRecord');
+    const btnClose = document.getElementById('btnCloseExercise');
+    const btnSave = document.getElementById('btnSaveExercise');
+    const modal = document.getElementById('exerciseModal');
+
+    if (btnOpen) btnOpen.addEventListener('click', () => {
+        if (!isLoggedIn()) {
+            showToast('请先登录后再使用运动记录', 'error');
+            openLoginModal();
+            return;
+        }
+        if (modal) {
+            document.getElementById('exDate').value = new Date().toISOString().slice(0, 10);
+            modal.classList.add('active');
+            loadExerciseRecords();
+        }
+    });
+    if (btnClose) btnClose.addEventListener('click', () => modal && modal.classList.remove('active'));
+    if (btnSave) btnSave.addEventListener('click', addExerciseRecord);
+    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
+}
+
+async function loadExerciseRecords() {
+    const list = document.getElementById('exerciseList');
+    try {
+        const data = await apiGet('/exercise/records');
+        if (!data || data.length === 0) {
+            list.innerHTML = '<div class="history-empty"><p>暂无运动记录，试试添加一条？</p></div>';
+            return;
+        }
+        list.innerHTML = data.map(r => `
+            <div class="exercise-item">
+                <div class="exercise-info">
+                    <strong>${escapeHtml(r.exercise_type)}</strong>
+                    <span>${r.duration}分钟</span>
+                    <span class="exercise-intensity">${escapeHtml(r.intensity)}</span>
+                    <span class="exercise-date">${escapeHtml(r.record_date)}</span>
+                </div>
+                ${r.notes ? `<div class="exercise-notes">${escapeHtml(r.notes)}</div>` : ''}
+                <button class="btn-delete-record" data-id="${r.id}" title="删除">删除</button>
+            </div>
+        `).join('');
+        list.querySelectorAll('.btn-delete-record').forEach(btn => {
+            btn.addEventListener('click', () => deleteExerciseRecord(btn.dataset.id));
+        });
+    } catch (e) {
+        list.innerHTML = '<div class="history-empty"><p>加载失败</p></div>';
+    }
+}
+
+async function addExerciseRecord() {
+    const type = document.getElementById('exType').value.trim();
+    const duration = parseInt(document.getElementById('exDuration').value) || 0;
+    const intensity = document.getElementById('exIntensity').value;
+    const date = document.getElementById('exDate').value;
+    const notes = document.getElementById('exNotes').value.trim();
+    if (!type) { showToast('请输入运动类型', 'error'); return; }
+    try {
+        await apiPost('/exercise/records', {
+            exercise_type: type,
+            duration,
+            intensity,
+            notes,
+            record_date: date,
+        });
+        showToast('运动记录已添加', 'success');
+        document.getElementById('exType').value = '';
+        document.getElementById('exDuration').value = '';
+        document.getElementById('exNotes').value = '';
+        await loadExerciseRecords();
+    } catch (e) { /* apiPost 已 showToast */ }
+}
+
+async function deleteExerciseRecord(id) {
+    if (!confirm('确定删除这条运动记录吗？')) return;
+    try {
+        await apiDelete(`/exercise/records/${id}`);
+        showToast('记录已删除', 'info');
+        await loadExerciseRecords();
+    } catch (e) { /* apiDelete 已 showToast */ }
+}
+
 // ==================== 网络请求封装 ====================
 async function apiGet(path) {
     try {
-        const resp = await fetch(`${API_BASE_URL}${path}`);
+        const resp = await fetch(`${API_BASE_URL}${path}`, { headers: authHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return await resp.json();
     } catch (e) {
@@ -76,11 +463,19 @@ async function apiGet(path) {
     }
 }
 
+function clearAuthStateSilently() {
+    if (!isLoggedIn()) return;
+    setToken(null);
+    STATE.currentUser = null;
+    applyAuthState();
+    showToast('登录凭证已失效，请重新登录', 'info');
+}
+
 async function apiPost(path, body) {
     try {
         const resp = await fetch(`${API_BASE_URL}${path}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body),
         });
         if (!resp.ok) {
@@ -104,7 +499,7 @@ async function apiDelete(path, query) {
                 .join('&');
             if (qs) url += `?${qs}`;
         }
-        const resp = await fetch(url, { method: 'DELETE' });
+        const resp = await fetch(url, { method: 'DELETE', headers: authHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return await resp.json();
     } catch (e) {
@@ -173,13 +568,18 @@ function initChat() {
     newChatBtn.addEventListener('click', () => createSession());
 }
 
-function createSession() {
-    const session = {
-        id: Date.now().toString(),
-        title: '新对话',
-        messages: [],
-        createdAt: new Date().toISOString(),
-    };
+async function createSession() {
+    let session;
+    if (isLoggedIn() && STATE.backendHealthy) {
+        try {
+            const data = await apiPost('/sessions', { title: '新对话' });
+            session = { id: String(data.id), title: '新对话', messages: [], remote: true };
+        } catch (e) {
+            session = { id: Date.now().toString(), title: '新对话', messages: [], remote: false };
+        }
+    } else {
+        session = { id: Date.now().toString(), title: '新对话', messages: [], remote: false };
+    }
     STATE.sessions.unshift(session);
     STATE.currentSessionId = session.id;
     renderSessionList();
@@ -193,6 +593,10 @@ function getCurrentSession() {
 function renderSessionList() {
     const list = document.getElementById('chatSessionList');
     if (!list) return;
+    if (STATE.sessions.length === 0) {
+        list.innerHTML = '';
+        return;
+    }
     list.innerHTML = STATE.sessions.map(s => `
         <div class="session-item ${s.id === STATE.currentSessionId ? 'active' : ''}" data-id="${s.id}">
             <span class="session-title">${escapeHtml(s.title)}</span>
@@ -203,19 +607,65 @@ function renderSessionList() {
     `).join('');
 
     list.querySelectorAll('.session-item').forEach(item => {
-        item.addEventListener('click', (e) => {
+        item.addEventListener('click', async (e) => {
             if (e.target.closest('[data-action="delete"]')) {
                 deleteSession(item.dataset.id);
                 return;
             }
             STATE.currentSessionId = item.dataset.id;
             renderSessionList();
+            await loadCurrentSessionMessages();
             renderMessages();
         });
     });
 }
 
-function deleteSession(id) {
+async function loadCurrentSessionMessages() {
+    const session = getCurrentSession();
+    if (!session || !session.remote || !isLoggedIn()) return;
+    try {
+        const data = await apiGet(`/sessions/${session.id}/messages`);
+        session.messages = (data || []).map(m => ({
+            role: m.role,
+            content: m.content,
+            sources: m.sources || [],
+            time: formatTime(new Date(m.created_at || Date.now())),
+        }));
+    } catch (e) {
+        /* 加载失败忽略 */
+    }
+}
+
+async function loadSessionsFromBackend() {
+    if (!STATE.backendHealthy) return;
+    try {
+        const data = await apiGet('/sessions');
+        const sessions = (data || []).map(s => ({
+            id: String(s.id),
+            title: s.title || '新对话',
+            messages: [],
+            remote: true,
+        }));
+        if (sessions.length > 0) {
+            STATE.sessions = sessions;
+            STATE.currentSessionId = sessions[0].id;
+        } else {
+            STATE.sessions = [];
+            await createSession();
+        }
+    } catch (e) {
+        STATE.sessions = [];
+        createSession();
+    }
+}
+
+async function deleteSession(id) {
+    const session = STATE.sessions.find(s => s.id === id);
+    if (session && session.remote && isLoggedIn() && STATE.backendHealthy) {
+        try {
+            await apiDelete(`/sessions/${id}`);
+        } catch (e) { /* 忽略 */ }
+    }
     STATE.sessions = STATE.sessions.filter(s => s.id !== id);
     if (STATE.currentSessionId === id) {
         STATE.currentSessionId = STATE.sessions.length > 0 ? STATE.sessions[0].id : null;
@@ -250,6 +700,8 @@ function renderMessages() {
                     <button class="suggest-btn" data-question="如何正确做杠铃深蹲？">如何正确做杠铃深蹲？</button>
                     <button class="suggest-btn" data-question="减脂期饮食应该怎么安排？">减脂期饮食应该怎么安排？</button>
                     <button class="suggest-btn" data-question="跑步膝盖疼是什么原因？">跑步膝盖疼是什么原因？</button>
+                    <button class="suggest-btn" data-question="增肌人群每天应摄入多少蛋白质？">增肌人群每天应摄入多少蛋白质？</button>
+                    <button class="suggest-btn" data-question="运动前应该怎么热身？">运动前应该怎么热身？</button>
                 </div>
             </div>
         `;
@@ -270,18 +722,145 @@ function renderMessages() {
     container.scrollTop = container.scrollHeight;
 }
 
+function inlineFormat(text) {
+    let t = escapeHtml(text);
+    // 行内代码
+    t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 加粗
+    t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // 斜体
+    t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // 【】加粗
+    t = t.replace(/【(.+?)】/g, '<strong>【$1】</strong>');
+    return t;
+}
+
+function renderMarkdownTable(rows) {
+    const parseRow = (row) => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+    const cells = rows.map(parseRow);
+    if (cells.length === 0) return '';
+    let header = cells[0];
+    let body = cells.slice(1);
+    // 第二行为分隔行（如 |---|:---:|）时跳过
+    if (body.length > 0 && /^[\s:|-]+$/.test(body[0].join(''))) {
+        body = body.slice(1);
+    }
+    let html = '<table><thead><tr>';
+    header.forEach(h => { html += `<th>${inlineFormat(h)}</th>`; });
+    html += '</tr></thead><tbody>';
+    body.forEach(row => {
+        html += '<tr>';
+        row.forEach(c => { html += `<td>${inlineFormat(c)}</td>`; });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+}
+
 function formatMessage(content, sources) {
-    let html = content.replace(/\n/g, '<br>');
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/【(.+?)】/g, '<strong>【$1】</strong>');
+    const lines = (content || '').split('\n');
+    let html = '';
+    let listOpen = null;
+    let inCodeBlock = false;
+    let codeLines = [];
+
+    const closeList = () => {
+        if (listOpen) { html += `</${listOpen}>`; listOpen = null; }
+    };
+
+    // 列表内缩进补充行（如 AI 生成的"依据[1]…"续行）：追加到当前列表项，不关闭列表
+    const appendToCurrentLi = (text) => {
+        if (html.endsWith('</li>')) {
+            html = html.slice(0, -5) + `<div class="li-cont">${inlineFormat(text)}</div></li>`;
+        }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // 代码块
+        if (/^\s*```/.test(line)) {
+            closeList();
+            if (inCodeBlock) {
+                html += `<pre><code>${codeLines.join('\n')}</code></pre>`;
+                codeLines = [];
+                inCodeBlock = false;
+            } else {
+                inCodeBlock = true;
+            }
+            continue;
+        }
+        if (inCodeBlock) {
+            codeLines.push(escapeHtml(line));
+            continue;
+        }
+
+        // 表格：收集连续表格行
+        if (/^\s*\|(.+)\|\s*$/.test(line)) {
+            closeList();
+            const rows = [];
+            while (i < lines.length && /^\s*\|(.+)\|\s*$/.test(lines[i])) {
+                rows.push(lines[i]);
+                i++;
+            }
+            i--;
+            html += renderMarkdownTable(rows);
+            continue;
+        }
+
+        // 标题
+        const hMatch = line.match(/^\s*(#{1,4})\s+(.+)$/);
+        if (hMatch) {
+            closeList();
+            const level = hMatch[1].length;
+            html += `<h${level}>${inlineFormat(hMatch[2])}</h${level}>`;
+            continue;
+        }
+
+        // 引用
+        const quoteMatch = line.match(/^\s*>\s?(.*)$/);
+        if (quoteMatch) {
+            closeList();
+            html += `<blockquote>${inlineFormat(quoteMatch[1])}</blockquote>`;
+            continue;
+        }
+
+        // 无序列表
+        const ulMatch = line.match(/^\s*[-•*]\s+(.+)$/);
+        // 有序列表
+        const olMatch = line.match(/^\s*(\d+)[.、)]\s*(.+)$/);
+
+        if (ulMatch) {
+            if (listOpen !== 'ul') {
+                closeList();
+                listOpen = 'ul';
+                html += '<ul>';
+            }
+            html += `<li>${inlineFormat(ulMatch[1])}</li>`;
+        } else if (olMatch) {
+            if (listOpen !== 'ol') {
+                closeList();
+                listOpen = 'ol';
+                html += '<ol>';
+            }
+            html += `<li>${inlineFormat(olMatch[2])}</li>`;
+        } else {
+            closeList();
+            html += line ? inlineFormat(line) : '<br>';
+        }
+    }
+    closeList();
+    if (inCodeBlock) {
+        html += `<pre><code>${codeLines.join('\n')}</code></pre>`;
+    }
 
     if (sources && sources.length > 0) {
-        html += '<br><span class="source-tag">参考来源：' +
+        html += '<div class="source-tag">参考来源：' +
             sources.map((s, i) => {
                 const label = `【资料${i + 1}】${s.title}`;
                 return s.url ? `<a href="${s.url}" target="_blank" rel="noopener">${label}</a>` : label;
             }).join('、') +
-            '</span>';
+            '</div>';
     }
 
     if (content.includes('风险提示') || content.includes('免责') || content.includes('咨询医生')) {
@@ -314,9 +893,15 @@ async function handleSendMessage() {
     const modeRadio = document.querySelector('input[name="searchMode"]:checked');
     const mode = modeRadio ? modeRadio.value : 'hybrid';
 
-    if (!getCurrentSession()) createSession();
+    if (!getCurrentSession()) await createSession();
 
     const session = getCurrentSession();
+    // 多轮上下文：取当前会话最近 6 轮（不含刚提交的这条）
+    const history = session.messages.slice(-6).map(m => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
+    }));
+
     const userMsg = {
         role: 'user',
         content: question,
@@ -326,6 +911,9 @@ async function handleSendMessage() {
 
     if (session.messages.length === 1 || session.title === '新对话') {
         session.title = question.length > 20 ? question.substring(0, 20) + '...' : question;
+        if (session.remote && isLoggedIn()) {
+            // 标题由后端在 /ask 时更新；本地同步
+        }
     }
 
     input.value = '';
@@ -351,7 +939,9 @@ async function handleSendMessage() {
 
     if (STATE.backendHealthy) {
         try {
-            const data = await apiPost('/ask', { question, mode });
+            const body = { question, mode, history };
+            if (session.remote && isLoggedIn()) body.session_id = session.id;
+            const data = await apiPost('/ask', body);
             answer = data.answer;
             sources = data.sources;
         } catch (e) {
@@ -374,7 +964,7 @@ async function handleSendMessage() {
     session.messages.push(assistantMsg);
     renderMessages();
 
-    if (STATE.backendHealthy) {
+    if (STATE.backendHealthy && isLoggedIn()) {
         loadHistoryFromBackend();
     }
 }
@@ -413,9 +1003,11 @@ async function handleCompare() {
 
     let bm25Result, vectorResult;
     try {
+        // 对比模式检索召回量与正常问答 hybrid 的 BM25 召回量（top_k*4=20）对齐，
+        // 避免 BM25 侧因 top_k 过小召回相关性不足而误判"无法回答"
         [bm25Result, vectorResult] = await Promise.all([
-            apiPost('/ask', { question, mode: 'bm25' }),
-            apiPost('/ask', { question, mode: 'vector' }),
+            apiPost('/ask', { question, mode: 'bm25', top_k: 20 }),
+            apiPost('/ask', { question, mode: 'vector', top_k: 20 }),
         ]);
     } catch (e) {
         container.innerHTML = `<div class="history-empty"><p>请求失败: ${e.message}</p></div>`;
@@ -435,8 +1027,8 @@ async function handleCompare() {
                     ${escapeHtml(bm25Result.answer).replace(/\n/g, '<br>')}
                 </div>
                 <div class="compare-sources">
-                    <div class="source-label">检索到的知识片段（Top ${bm25Result.sources.length}）</div>
-                    ${bm25Result.sources.map(s => `
+                    <div class="source-label">检索到的知识片段（展示前 ${Math.min(bm25Result.sources.length, 5)} / 共 ${bm25Result.sources.length} 条）</div>
+                    ${bm25Result.sources.slice(0, 5).map(s => `
                         <div class="compare-source-item">
                             <span class="source-score">${typeof s.score === 'number' && s.score > 1 ? s.score.toFixed(1) : s.score.toFixed(2)}</span>
                             <div>
@@ -464,8 +1056,8 @@ async function handleCompare() {
                     ${escapeHtml(vectorResult.answer).replace(/\n/g, '<br>')}
                 </div>
                 <div class="compare-sources">
-                    <div class="source-label">检索到的知识片段（Top ${vectorResult.sources.length}）</div>
-                    ${vectorResult.sources.map(s => `
+                    <div class="source-label">检索到的知识片段（展示前 ${Math.min(vectorResult.sources.length, 5)} / 共 ${vectorResult.sources.length} 条）</div>
+                    ${vectorResult.sources.slice(0, 5).map(s => `
                         <div class="compare-source-item">
                             <span class="source-score">${s.score.toFixed(2)}</span>
                             <div>
@@ -616,6 +1208,7 @@ function renderKnowledgeList(items) {
     container.querySelectorAll('[data-action="edit"]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (!requireLogin()) return;
             openEditEntryModal(btn.dataset.id);
         });
     });
@@ -623,6 +1216,7 @@ function renderKnowledgeList(items) {
     container.querySelectorAll('[data-action="delete"]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (!requireLogin()) return;
             openDeleteConfirm(btn.dataset.id, btn.dataset.title);
         });
     });
@@ -656,43 +1250,55 @@ function sortKnowledgeItems(items) {
 }
 
 // ==================== 问答历史 ====================
+let historyListenersBound = false;
+
 async function initHistory() {
     if (!STATE.backendHealthy) return initHistoryFallback();
 
-    const clearBtn = document.getElementById('btnClearHistory');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', async () => {
-            try {
-                await apiDelete('/history');
-                STATE.history = [];
-                renderHistoryList();
-                showToast('问答历史已清空', 'info');
-            } catch (e) {
-                showToast('清空失败', 'error');
-            }
-        });
+    if (!historyListenersBound) {
+        const clearBtn = document.getElementById('btnClearHistory');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', async () => {
+                try {
+                    await apiDelete('/history');
+                    STATE.history = [];
+                    renderHistoryList();
+                    showToast('问答历史已清空', 'info');
+                } catch (e) {
+                    showToast('清空失败', 'error');
+                }
+            });
+        }
+
+        const btnBatchDeleteHistory = document.getElementById('btnBatchDeleteHistory');
+        if (btnBatchDeleteHistory) {
+            btnBatchDeleteHistory.addEventListener('click', enterHistoryBatchMode);
+        }
+        const btnConfirmBatchDeleteHistory = document.getElementById('btnConfirmBatchDeleteHistory');
+        if (btnConfirmBatchDeleteHistory) {
+            btnConfirmBatchDeleteHistory.addEventListener('click', executeBatchDeleteHistory);
+        }
+        const btnCancelHistoryBatch = document.getElementById('btnCancelHistoryBatch');
+        if (btnCancelHistoryBatch) {
+            btnCancelHistoryBatch.addEventListener('click', exitHistoryBatchMode);
+        }
+        const historyCheckAll = document.getElementById('historyCheckAll');
+        if (historyCheckAll) {
+            historyCheckAll.addEventListener('change', () => {
+                document.querySelectorAll('.history-check').forEach(cb => {
+                    cb.checked = historyCheckAll.checked;
+                });
+                updateHistoryBatchCount();
+            });
+        }
+        historyListenersBound = true;
     }
 
-    const btnBatchDeleteHistory = document.getElementById('btnBatchDeleteHistory');
-    if (btnBatchDeleteHistory) {
-        btnBatchDeleteHistory.addEventListener('click', enterHistoryBatchMode);
-    }
-    const btnConfirmBatchDeleteHistory = document.getElementById('btnConfirmBatchDeleteHistory');
-    if (btnConfirmBatchDeleteHistory) {
-        btnConfirmBatchDeleteHistory.addEventListener('click', executeBatchDeleteHistory);
-    }
-    const btnCancelHistoryBatch = document.getElementById('btnCancelHistoryBatch');
-    if (btnCancelHistoryBatch) {
-        btnCancelHistoryBatch.addEventListener('click', exitHistoryBatchMode);
-    }
-    const historyCheckAll = document.getElementById('historyCheckAll');
-    if (historyCheckAll) {
-        historyCheckAll.addEventListener('change', () => {
-            document.querySelectorAll('.history-check').forEach(cb => {
-                cb.checked = historyCheckAll.checked;
-            });
-            updateHistoryBatchCount();
-        });
+    // 未登录：历史为登录功能
+    if (!isLoggedIn()) {
+        STATE.history = [];
+        renderHistoryList();
+        return;
     }
 
     await loadHistoryFromBackend();
@@ -733,6 +1339,25 @@ async function loadHistoryFromBackend() {
 function renderHistoryList() {
     const container = document.getElementById('historyList');
     if (!container) return;
+
+    if (!isLoggedIn() && STATE.backendHealthy) {
+        container.innerHTML = `
+            <div class="history-empty">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                    <rect x="14" y="6" width="20" height="36" rx="4" stroke="#999" stroke-width="2"/>
+                    <line x1="14" y1="14" x2="34" y2="14" stroke="#999" stroke-width="2"/>
+                    <line x1="24" y1="6" x2="24" y2="2" stroke="#999" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="18" y1="22" x2="30" y2="22" stroke="#999" stroke-width="1.5"/>
+                    <line x1="18" y1="28" x2="30" y2="28" stroke="#999" stroke-width="1.5"/>
+                    <line x1="18" y1="34" x2="26" y2="34" stroke="#999" stroke-width="1.5"/>
+                </svg>
+                <p>问答历史为登录功能，登录后可查看</p>
+                <button class="btn btn-primary btn-sm" id="btnHistoryLogin" style="margin-top:12px;">去登录</button>
+            </div>`;
+        const btn = container.querySelector('#btnHistoryLogin');
+        if (btn) btn.addEventListener('click', () => openLoginModal());
+        return;
+    }
 
     if (!STATE.history || STATE.history.length === 0) {
         container.innerHTML = `
@@ -849,7 +1474,7 @@ function initSettings() {
     const modelSelectModal = document.getElementById('modelSelectModal');
     const modal = document.getElementById('settingsModal');
 
-    btnSettings.addEventListener('click', openSettings);
+    btnSettings.addEventListener('click', () => requireLogin(openSettings));
     btnCloseSettings.addEventListener('click', closeSettings);
     btnCancelSettings.addEventListener('click', closeSettings);
     btnApplyMode.addEventListener('click', applyMode);
@@ -902,7 +1527,7 @@ async function applyMode() {
     try {
         const resp = await fetch(`${API_BASE_URL}/config/mode`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ mode }),
         });
         const data = await resp.json();
@@ -914,6 +1539,7 @@ async function applyMode() {
         showSettingsToast(`已切换到${label}模式`, 'success');
         await checkBackendHealth();
         await loadSettings();
+        await refreshUserStatus();
     } catch (e) {
         showSettingsToast(`切换失败: ${e.message}`, 'error');
         await loadSettings();
@@ -938,7 +1564,7 @@ function closeSettings() {
 
 async function loadSettings() {
     try {
-        const resp = await fetch(`${API_BASE_URL}/config`);
+        const resp = await fetch(`${API_BASE_URL}/config`, { headers: authHeaders() });
         if (resp.ok) {
             const config = await resp.json();
             document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
@@ -959,7 +1585,7 @@ async function loadModelList() {
     const listEl = document.getElementById('modelList');
     const emptyEl = document.getElementById('modelListEmpty');
     try {
-        const resp = await fetch(`${API_BASE_URL}/config/models`);
+        const resp = await fetch(`${API_BASE_URL}/config/models`, { headers: authHeaders() });
         if (!resp.ok) throw new Error('加载失败');
         const data = await resp.json();
         renderModelList(data.models, data.active_model_id);
@@ -1024,7 +1650,7 @@ function openEditModel(id) {
     document.getElementById('testNewModelResult').className = 'test-result';
     document.getElementById('testNewModelResult').textContent = '';
 
-    fetch(`${API_BASE_URL}/config/models`)
+    fetch(`${API_BASE_URL}/config/models`, { headers: authHeaders() })
         .then(r => r.json())
         .then(data => {
             const m = (data.models || []).find(x => x.id === id);
@@ -1040,7 +1666,7 @@ function openEditModel(id) {
 
 async function switchModel(id) {
     try {
-        const resp = await fetch(`${API_BASE_URL}/config/models/${id}/activate`, { method: 'PUT' });
+        const resp = await fetch(`${API_BASE_URL}/config/models/${id}/activate`, { method: 'PUT', headers: authHeaders() });
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '切换失败');
@@ -1048,6 +1674,7 @@ async function switchModel(id) {
         showSettingsToast('模型已切换', 'success');
         await loadModelList();
         await checkBackendHealth();
+        await refreshUserStatus();
     } catch (e) {
         showSettingsToast(`切换失败: ${e.message}`, 'error');
     }
@@ -1056,7 +1683,7 @@ async function switchModel(id) {
 async function removeModel(id, name) {
     if (!confirm(`确定删除模型 "${name}" 吗？`)) return;
     try {
-        const resp = await fetch(`${API_BASE_URL}/config/models/${id}`, { method: 'DELETE' });
+        const resp = await fetch(`${API_BASE_URL}/config/models/${id}`, { method: 'DELETE', headers: authHeaders() });
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '删除失败');
@@ -1064,6 +1691,7 @@ async function removeModel(id, name) {
         showSettingsToast('模型已删除', 'success');
         await loadModelList();
         await checkBackendHealth();
+        await refreshUserStatus();
     } catch (e) {
         showSettingsToast(`删除失败: ${e.message}`, 'error');
     }
@@ -1115,7 +1743,7 @@ async function saveNewModel() {
         const url = isEdit ? `${API_BASE_URL}/config/models/${editingModelId}` : `${API_BASE_URL}/config/models`;
         const resp = await fetch(url, {
             method: isEdit ? 'PUT' : 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, base_url: baseUrl, api_key: apiKey, model_name: modelName }),
         });
         if (!resp.ok) {
@@ -1126,6 +1754,7 @@ async function saveNewModel() {
         hideAddModelForm();
         await loadModelList();
         await checkBackendHealth();
+        await refreshUserStatus();
     } catch (e) {
         showSettingsToast(`保存失败: ${e.message}`, 'error');
     }
@@ -1152,7 +1781,7 @@ async function testNewModelConnection() {
     try {
         const resp = await fetch(`${API_BASE_URL}/config/test`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || 'test', model_name: modelName }),
         });
         const data = await resp.json();
@@ -1173,15 +1802,11 @@ async function testNewModelConnection() {
 }
 
 function toggleLlmConfigVisibility(show) {
+    // "当前模型" 与 "已添加模型" 始终可见，便于离线模式下先添加模型、查看当前模型
     const group = document.getElementById('currentModelGroup');
+    if (group) group.classList.remove('hidden');
     const manageGroup = document.getElementById('modelManageGroup');
-    if (show) {
-        group.classList.remove('hidden');
-        if (manageGroup) manageGroup.classList.remove('hidden');
-    } else {
-        group.classList.add('hidden');
-        if (manageGroup) manageGroup.classList.add('hidden');
-    }
+    if (manageGroup) manageGroup.classList.remove('hidden');
 }
 
 // ==================== 设置弹窗内提示（界面正下方） ====================
@@ -1203,7 +1828,7 @@ async function openModelSelectModal() {
     const modal = document.getElementById('modelSelectModal');
     modal.classList.add('active');
     try {
-        const resp = await fetch(`${API_BASE_URL}/config/models`);
+        const resp = await fetch(`${API_BASE_URL}/config/models`, { headers: authHeaders() });
         if (!resp.ok) throw new Error('加载失败');
         const data = await resp.json();
         renderModelSelectList(data.models, data.active_model_id);
@@ -1247,7 +1872,7 @@ function renderModelSelectList(models, activeId) {
 async function selectModelFromModal(id) {
     const wasMock = document.querySelector('#settingsModal .mode-btn.active')?.dataset.mode === 'mock';
     try {
-        const resp = await fetch(`${API_BASE_URL}/config/models/${id}/activate`, { method: 'PUT' });
+        const resp = await fetch(`${API_BASE_URL}/config/models/${id}/activate`, { method: 'PUT', headers: authHeaders() });
         if (!resp.ok) {
             const err = await resp.json();
             throw new Error(err.detail || '切换失败');
@@ -1256,7 +1881,7 @@ async function selectModelFromModal(id) {
             // 离线模式下选择模型后保持离线模式，仅切换激活模型
             await fetch(`${API_BASE_URL}/config/mode`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ mode: 'mock' }),
             });
         }
@@ -1264,6 +1889,7 @@ async function selectModelFromModal(id) {
         closeModelSelectModal();
         await loadModelList();
         await checkBackendHealth();
+        await refreshUserStatus();
     } catch (e) {
         showSettingsToast(`选择失败: ${e.message}`, 'error');
     }
@@ -1292,7 +1918,7 @@ function initImport() {
     }
     if (fileInput) fileInput.addEventListener('change', handleFileSelect);
     if (btnStart) btnStart.addEventListener('click', startImport);
-    if (btnRebuild) btnRebuild.addEventListener('click', rebuildIndex);
+    if (btnRebuild) btnRebuild.addEventListener('click', () => requireLogin(rebuildIndex));
 
     // 手动/智能导入模式切换
     document.querySelectorAll('.import-mode-btn').forEach(btn => {
@@ -1448,6 +2074,7 @@ function removeImportFile(index) {
 }
 
 async function startImport() {
+    if (!requireLogin()) return;
     if (importFiles.length === 0) {
         showToast('请先选择文件', 'error');
         return;
@@ -1482,6 +2109,7 @@ async function startImport() {
     try {
         const resp = await fetch(`${API_BASE_URL}/knowledge/import`, {
             method: 'POST',
+            headers: authHeaders(),
             body: formData,
         });
         const data = await resp.json();
@@ -1510,7 +2138,7 @@ async function startImport() {
 
 async function rebuildIndex() {
     try {
-        const resp = await fetch(`${API_BASE_URL}/knowledge/rebuild-index`, { method: 'POST' });
+        const resp = await fetch(`${API_BASE_URL}/knowledge/rebuild-index`, { method: 'POST', headers: authHeaders() });
         const data = await resp.json();
         if (resp.ok) {
             showToast(data.message, 'success');
@@ -1537,7 +2165,7 @@ function initEntryModal() {
     const btnConfirmDelete = document.getElementById('btnConfirmDelete');
     const deleteModal = document.getElementById('deleteConfirmModal');
 
-    if (btnAdd) btnAdd.addEventListener('click', openAddEntryModal);
+    if (btnAdd) btnAdd.addEventListener('click', () => requireLogin(openAddEntryModal));
     if (btnClose) btnClose.addEventListener('click', closeEntryModal);
     if (btnCancel) btnCancel.addEventListener('click', closeEntryModal);
     if (btnSave) btnSave.addEventListener('click', saveEntry);
@@ -1570,13 +2198,13 @@ function initEntryModal() {
 
     // 批量操作入口
     const btnBatchKnowledge = document.getElementById('btnBatchKnowledge');
-    if (btnBatchKnowledge) btnBatchKnowledge.addEventListener('click', enterKnowledgeBatchMode);
+    if (btnBatchKnowledge) btnBatchKnowledge.addEventListener('click', () => requireLogin(enterKnowledgeBatchMode));
 
     // 批量编辑弹窗
     const btnBatchEdit = document.getElementById('btnBatchEditKnowledge');
-    if (btnBatchEdit) btnBatchEdit.addEventListener('click', openBatchEditModal);
+    if (btnBatchEdit) btnBatchEdit.addEventListener('click', () => requireLogin(openBatchEditModal));
     const btnBatchDelete = document.getElementById('btnBatchDeleteKnowledge');
-    if (btnBatchDelete) btnBatchDelete.addEventListener('click', executeBatchDeleteKnowledge);
+    if (btnBatchDelete) btnBatchDelete.addEventListener('click', () => requireLogin(executeBatchDeleteKnowledge));
     const btnCancelKnowledgeBatch = document.getElementById('btnCancelKnowledgeBatch');
     if (btnCancelKnowledgeBatch) btnCancelKnowledgeBatch.addEventListener('click', exitKnowledgeBatchMode);
     const knowledgeCheckAll = document.getElementById('knowledgeCheckAll');
@@ -1695,13 +2323,13 @@ async function saveEntry() {
         if (entryId) {
             resp = await fetch(`${API_BASE_URL}/knowledge/entries/${entryId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(body),
             });
         } else {
             resp = await fetch(`${API_BASE_URL}/knowledge/entries`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(body),
             });
         }
@@ -1743,7 +2371,7 @@ async function executeDeleteEntry() {
     try {
         const rebuild = document.getElementById('deleteRebuildIndex')?.checked !== false;
         const url = `${API_BASE_URL}/knowledge/entries/${currentDeleteEntryId}?rebuild=${rebuild ? 1 : 0}`;
-        const resp = await fetch(url, { method: 'DELETE' });
+        const resp = await fetch(url, { method: 'DELETE', headers: authHeaders() });
         const data = await resp.json();
         if (resp.ok) {
             showToast(data.message, 'success');
@@ -1846,7 +2474,7 @@ async function saveBatchEdit() {
     try {
         const resp = await fetch(`${API_BASE_URL}/knowledge/entries/batch`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(body),
         });
         const data = await resp.json();
@@ -1882,9 +2510,9 @@ async function executeBatchDeleteKnowledge() {
     try {
         // 逐条删除（不重建索引），最后统一重建一次
         for (const id of ids) {
-            await fetch(`${API_BASE_URL}/knowledge/entries/${id}?rebuild=0`, { method: 'DELETE' });
+            await fetch(`${API_BASE_URL}/knowledge/entries/${id}?rebuild=0`, { method: 'DELETE', headers: authHeaders() });
         }
-        await fetch(`${API_BASE_URL}/knowledge/rebuild-index`, { method: 'POST' });
+        await fetch(`${API_BASE_URL}/knowledge/rebuild-index`, { method: 'POST', headers: authHeaders() });
         showToast(`已删除 ${ids.length} 条知识`, 'success');
         exitKnowledgeBatchMode();
         await initKnowledge();

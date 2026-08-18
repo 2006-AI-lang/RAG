@@ -1,9 +1,12 @@
 """应用配置管理，通过 pydantic-settings 加载 .env 文件。"""
 
 import os
+import logging
 from pathlib import Path
 from cryptography.fernet import Fernet
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger("fitqa.config")
 
 
 class Settings(BaseSettings):
@@ -80,7 +83,7 @@ class Settings(BaseSettings):
         else:
             env_path.write_text(f"ENCRYPTION_KEY={key}\n", encoding="utf-8")
 
-        print(f"[Config] Generated new encryption key")
+        logger.info("[Config] Generated new encryption key")
         return key
 
     def encrypt_api_key(self, api_key: str) -> str:
@@ -96,7 +99,7 @@ class Settings(BaseSettings):
         return f.decrypt(encrypted.encode()).decode()
 
     class Config:
-        env_file = ".env"
+        env_file = str(Path(__file__).parent / ".env")
         env_file_encoding = "utf-8"
 
 
