@@ -9,6 +9,7 @@ import logging
 from .bm25_retriever import BM25Retriever
 from .vector_retriever import VectorRetriever
 from .reranker import Reranker
+from config import settings
 
 logger = logging.getLogger("fitqa.hybrid")
 
@@ -72,7 +73,7 @@ def rrf_fusion(
             "category": item["category"],
             "content": item["content"],
             "score": round(item["rrf_score"], 4),
-            "snippet": item.get("snippet", item["content"][:200]),
+            "snippet": item.get("snippet", item["content"][:300]) + ("..." if len(item["content"]) > 300 else ""),
             "url": item.get("url", ""),
         })
 
@@ -122,13 +123,14 @@ class HybridRetriever:
             return self.vector.search(query, top_k), "vector"
 
         # hybrid 模式
-        bm25_results = self.bm25.search(query, top_k=top_k * 4)
+        candidate_count = top_k * settings.RETRIEVAL_CANDIDATE_MULTIPLIER
+        bm25_results = self.bm25.search(query, top_k=candidate_count)
         actual_mode = "hybrid"
 
         if self.vector.available:
-            vector_results = self.vector.search(query, top_k=top_k * 4)
+            vector_results = self.vector.search(query, top_k=candidate_count)
             if vector_results:
-                fused = rrf_fusion(bm25_results, vector_results, top_k=top_k * 4)
+                fused = rrf_fusion(bm25_results, vector_results, k=settings.RETRIEVAL_RRF_K, top_k=candidate_count)
                 # 重排序：对融合后的候选精排，取最终 top_k
                 return self.reranker.rerank(query, fused, top_k=top_k), "hybrid"
             else:

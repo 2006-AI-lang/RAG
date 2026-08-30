@@ -21,6 +21,8 @@ class AskRequest(BaseModel):
     top_k: Optional[int] = Field(default=None, ge=1, le=50, description="检索返回条数（默认 5；检索对比模式传 20 以对齐正常问答 hybrid 的 BM25 召回量）")
     session_id: Optional[int] = Field(default=None, description="多轮会话 ID（登录用户）")
     history: List[ChatTurn] = Field(default=[], description="最近对话历史（用于多轮上下文）")
+    scene: str = Field(default="auto", description="场景: auto | general | muscle_gain | fat_loss | injury | nutrition 或 cat:分类名")
+    skip_cache: bool = Field(default=False, description="是否跳过缓存，用于重新回答")
 
 
 class SourceItem(BaseModel):
@@ -38,6 +40,7 @@ class AskResponse(BaseModel):
     answer: str
     sources: List[SourceItem]
     mode: str
+    cached: bool = False
 
 
 class KnowledgeItem(BaseModel):
@@ -269,3 +272,157 @@ class CreateExerciseRequest(BaseModel):
     intensity: str = Field(default="中等", description="强度：高强度/中等/低强度")
     notes: str = Field(default="", max_length=200, description="备注")
     record_date: str = Field(default="", description="日期 YYYY-MM-DD")
+
+
+class UpdateExerciseRequest(BaseModel):
+    """更新运动记录请求。"""
+    exercise_type: str = Field(default="", max_length=50, description="运动类型")
+    duration: int = Field(default=0, ge=0, description="时长（分钟）")
+    intensity: str = Field(default="", description="强度：高强度/中等/低强度")
+    notes: str = Field(default="", max_length=200, description="备注")
+    record_date: str = Field(default="", description="日期 YYYY-MM-DD")
+
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求。"""
+    ids: List[int] = Field(..., min_length=1, description="要删除的 ID 列表")
+
+
+# ==================== 训练计划 ====================
+
+class TrainingPlanItem(BaseModel):
+    """训练计划条目。"""
+    id: int
+    title: str
+    goal: str
+    level: str
+    days_per_week: int = 4
+    content: str
+    category: str
+    created_at: str
+    updated_at: str
+
+
+class CreateTrainingPlanRequest(BaseModel):
+    """创建训练计划请求。"""
+    title: str = Field(default="", max_length=200, description="计划标题")
+    goal: str = Field(default="", max_length=100, description="训练目标")
+    level: str = Field(default="新手", max_length=50, description="经验水平")
+    days_per_week: int = Field(default=4, ge=1, le=7, description="每周训练天数")
+    content: str = Field(..., description="计划内容")
+    category: str = Field(default="", max_length=50, description="分类标签")
+
+
+class UpdateTrainingPlanRequest(BaseModel):
+    """更新训练计划请求。"""
+    title: str = Field(default="", max_length=200, description="计划标题")
+    goal: str = Field(default="", max_length=100, description="训练目标")
+    level: str = Field(default="新手", max_length=50, description="经验水平")
+    days_per_week: int = Field(default=4, ge=1, le=7, description="每周训练天数")
+    content: str = Field(..., description="计划内容")
+    category: str = Field(default="", max_length=50, description="分类标签")
+
+
+class BatchDeleteTrainingPlanRequest(BaseModel):
+    """批量删除训练计划请求。"""
+    ids: List[int] = Field(..., min_length=1, description="要删除的计划 ID 列表")
+
+
+class BatchUpdateTrainingPlanRequest(BaseModel):
+    """批量更新训练计划请求。"""
+    ids: List[int] = Field(..., min_length=1, description="要更新的计划 ID 列表")
+    goal: str = Field(default="", max_length=100, description="训练目标")
+    level: str = Field(default="", max_length=50, description="经验水平")
+    days_per_week: int = Field(default=0, ge=0, le=7, description="每周训练天数（0=不修改）")
+    category: str = Field(default="", max_length=50, description="分类标签")
+
+
+# ==================== 检索偏好 ====================
+
+class RetrievalPreferences(BaseModel):
+    """用户检索偏好。"""
+    default_mode: str = Field(default="hybrid", description="默认检索模式")
+    default_top_k: int = Field(default=5, ge=1, le=50, description="默认返回条数")
+    min_vector_score: float = Field(default=0.30, ge=0.0, le=1.0, description="向量相似度阈值")
+
+
+class RetrievalPreferencesResponse(BaseModel):
+    """检索偏好响应。"""
+    default_mode: str
+    default_top_k: int
+    min_vector_score: float
+
+
+# ==================== 场景选择 ====================
+
+class SceneInfo(BaseModel):
+    """场景信息。"""
+    key: str
+    label: str
+    icon: str
+    description: str
+
+
+# ==================== 分类管理 ====================
+
+class CategoryKeywordsItem(BaseModel):
+    """分类关键词条目。"""
+    category: str
+    keywords: List[str]
+
+
+class CategoryKeywordsUpdate(BaseModel):
+    """分类关键词更新请求。"""
+    categories: List[CategoryKeywordsItem]
+
+
+# ==================== 知识版本管理 ====================
+
+class KnowledgeVersionItem(BaseModel):
+    """知识版本。"""
+    id: int
+    entry_id: str
+    version: int
+    title: str
+    category: str
+    content: str
+    source: str = ""
+    url: str = ""
+    created_at: str = ""
+
+
+# ==================== 知识导出 ====================
+
+class ExportRequest(BaseModel):
+    """导出请求。"""
+    format: str = Field(default="json", description="导出格式: json | csv | markdown")
+
+
+# ==================== 导入预览 ====================
+
+class ImportPreviewItem(BaseModel):
+    """导入预览条目。"""
+    title: str
+    category: str
+    content_preview: str
+    content_full: str
+
+
+class ImportPreviewResponse(BaseModel):
+    """导入预览响应。"""
+    filename: str
+    entries: List[ImportPreviewItem]
+    total_count: int
+
+
+# ==================== 流式响应 ====================
+
+class AskStreamRequest(BaseModel):
+    """流式问答请求。"""
+    question: str = Field(..., min_length=1, max_length=500)
+    mode: str = Field(default="hybrid")
+    top_k: Optional[int] = Field(default=None, ge=1, le=50)
+    session_id: Optional[int] = Field(default=None)
+    history: List[ChatTurn] = Field(default=[])
+    scene: str = Field(default="auto", description="场景: auto | general | muscle_gain | fat_loss | injury | nutrition")
+    skip_cache: bool = Field(default=False, description="是否跳过缓存")

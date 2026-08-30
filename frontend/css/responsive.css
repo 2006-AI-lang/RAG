@@ -1,0 +1,461 @@
+/* ============================================================
+   FitQA Responsive Layout
+   适配：
+   - 移动端（< 640px）：单列布局，简化导航
+   - 平板（640px ~ 1024px）：保留主布局，缩小间距
+   - 桌面（> 1024px）：完整布局
+   ============================================================ */
+
+/* ---------- 平板 ---------- */
+@media (max-width: 1024px) {
+    .app-header {
+        padding: 10px 16px;
+    }
+
+    .app-title {
+        font-size: 18px;
+    }
+
+    .app-subtitle {
+        display: none;
+    }
+
+    .header-nav {
+        gap: 4px;
+    }
+
+    .nav-btn {
+        padding: 6px 12px;
+        font-size: 13px;
+    }
+
+    .chat-container {
+        flex-direction: column;
+    }
+
+    .chat-sidebar {
+        width: 100%;
+        max-height: 200px;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .chat-main {
+        flex: 1;
+    }
+
+    .chat-session-list {
+        display: flex;
+        overflow-x: auto;
+        gap: 4px;
+        padding: 8px;
+    }
+
+    .chat-session-list .session-item {
+        flex-shrink: 0;
+        min-width: 120px;
+    }
+
+    .knowledge-toolbar {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .compare-container {
+        padding: 16px;
+    }
+}
+
+/* ---------- 移动端 ---------- */
+@media (max-width: 640px) {
+    .app-header {
+        padding: 8px 12px;
+        flex-wrap: wrap;
+    }
+
+    .header-left {
+        gap: 6px;
+    }
+
+    .header-nav {
+        order: 3;
+        width: 100%;
+        justify-content: center;
+        margin-top: 8px;
+        gap: 2px;
+    }
+
+    .nav-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+    }
+
+    .header-right {
+        gap: 6px;
+    }
+
+    .api-status {
+        display: none;
+    }
+
+    /* 对话区 */
+    .chat-messages {
+        padding: 12px;
+    }
+
+    .chat-welcome {
+        padding: 24px 12px;
+    }
+
+    .chat-welcome h2 {
+        font-size: 20px;
+    }
+
+    .chat-input-area {
+        padding: 8px;
+    }
+
+    .chat-input-wrapper {
+        gap: 6px;
+    }
+
+    .chat-input-wrapper textarea {
+        font-size: 14px;
+        padding: 10px 12px;
+    }
+
+    .chat-input-hint {
+        flex-wrap: wrap;
+        gap: 4px;
+        font-size: 11px;
+    }
+
+    .mode-switch {
+        font-size: 11px;
+    }
+
+    .btn-scene {
+        font-size: 11px;
+        padding: 2px 6px;
+    }
+
+    /* 知识库 */
+    .knowledge-header {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .knowledge-actions {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .knowledge-actions .btn-sm {
+        font-size: 11px;
+        padding: 4px 8px;
+    }
+
+    .knowledge-list {
+        grid-template-columns: 1fr;
+    }
+
+    .knowledge-toolbar {
+        flex-direction: column;
+    }
+
+    .filter-tags {
+        flex-wrap: wrap;
+    }
+
+    /* 比较面板 */
+    .compare-input-area {
+        flex-direction: column;
+    }
+
+    .compare-input-wrapper {
+        flex-direction: column;
+    }
+
+    .compare-input-wrapper input {
+        width: 100%;
+    }
+
+    .compare-results {
+        grid-template-columns: 1fr;
+    }
+
+    /* 历史 */
+    .history-header {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    /* 弹窗 */
+    .modal {
+        width: 95vw;
+        max-height: 90vh;
+        margin: 5vh auto;
+    }
+
+    .modal-lg {
+        width: 95vw;
+    }
+
+    .modal-body {
+        padding: 12px;
+    }
+
+    .form-row-2 {
+        grid-template-columns: 1fr;
+    }
+
+    /* 高级设置 */
+    .input-with-slider {
+        flex-direction: column;
+    }
+
+    .retrieval-slider {
+        width: 100%;
+    }
+
+    .setting-input-num {
+        width: 100%;
+    }
+
+    /* 知识卡片 */
+    .knowledge-card {
+        padding: 12px;
+    }
+
+    .knowledge-card-title {
+        font-size: 14px;
+    }
+
+    .knowledge-card-body {
+        font-size: 12px;
+    }
+
+    /* 消息气泡 */
+    .message-bubble {
+        max-width: 90%;
+    }
+
+    .message-user .message-bubble {
+        max-width: 85%;
+    }
+
+    /* 运动记录 */
+    .exercise-form-row {
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .exercise-form-row .form-input {
+        width: 100%;
+    }
+
+    .exercise-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* 版本历史 */
+    .version-entry-info {
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .version-item {
+        padding: 10px;
+    }
+
+    .version-item-content {
+        font-size: 12px;
+        max-height: 80px;
+    }
+
+    /* 分类管理 */
+    .category-manage-add {
+        flex-direction: column;
+    }
+
+    .category-manage-add .setting-input {
+        width: 100%;
+    }
+
+    /* 导入预览 */
+    .import-preview-list {
+        max-height: 300px;
+    }
+
+    .import-preview-item {
+        padding: 8px;
+    }
+
+    .import-preview-item-title {
+        font-size: 13px;
+    }
+
+    .import-preview-item-content {
+        font-size: 11px;
+        max-height: 60px;
+    }
+
+    /* Toast */
+    .toast-container {
+        width: 90vw;
+        right: 5vw;
+    }
+
+    /* 场景下拉 */
+    .scene-dropdown {
+        left: 0;
+        min-width: 140px;
+    }
+
+    .scene-option {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+
+    /* 导出下拉 */
+    .export-dropdown {
+        right: 0;
+        min-width: 130px;
+    }
+
+    .export-option {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+
+    /* 建议问题 */
+    .suggest-questions {
+        gap: 6px;
+    }
+
+    .suggest-btn {
+        font-size: 12px;
+        padding: 6px 12px;
+    }
+
+    /* 隐藏次要元素 */
+    .hint-sep {
+        display: none;
+    }
+
+    .btn-plan {
+        font-size: 10px;
+        padding: 2px 6px;
+    }
+
+    .btn-plan svg {
+        width: 10px;
+        height: 10px;
+    }
+}
+
+/* ---------- 小屏手机 ---------- */
+@media (max-width: 380px) {
+    .app-title {
+        font-size: 16px;
+    }
+
+    .nav-btn {
+        padding: 3px 8px;
+        font-size: 11px;
+    }
+
+    .chat-input-hint {
+        font-size: 10px;
+    }
+
+    .mode-switch {
+        font-size: 10px;
+    }
+
+    .btn-scene {
+        font-size: 10px;
+    }
+
+    .modal {
+        width: 98vw;
+        margin: 2vh auto;
+    }
+
+    .knowledge-actions .btn-sm {
+        font-size: 10px;
+        padding: 3px 6px;
+    }
+
+    /* 缓存徽章 */
+    .cache-badge {
+        font-size: 10px;
+        padding: 1px 4px;
+    }
+}
+
+/* ---------- 窄屏优化 ---------- */
+@media (max-width: 480px) {
+    .source-item-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .source-item-score {
+        margin-left: 0;
+    }
+
+    .source-item-snippet {
+        font-size: 11px;
+    }
+
+    .answer-actions {
+        right: 4px;
+        top: 4px;
+    }
+
+    .answer-actions .btn-icon {
+        width: 24px;
+        height: 24px;
+    }
+
+    .cache-badge {
+        font-size: 9px;
+        padding: 0 4px;
+    }
+
+    .source-tag {
+        font-size: 12px;
+    }
+
+    .scene-option-desc {
+        display: none;
+    }
+
+    .scene-option {
+        padding: 5px 8px;
+    }
+}
+
+/* ---------- 训练计划板块响应式 ---------- */
+@media (max-width: 768px) {
+    .training-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .training-filters {
+        margin-left: 0;
+        flex-wrap: wrap;
+    }
+    .training-filters select,
+    .training-filters input {
+        flex: 1;
+        min-width: 100px;
+    }
+    .training-item .ti-actions {
+        opacity: 1;
+    }
+    .training-actions {
+        flex-wrap: wrap;
+    }
+}

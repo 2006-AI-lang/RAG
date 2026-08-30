@@ -1,12 +1,15 @@
 """知识库 API 路由。"""
 
 import os
+import re
 import shutil
 import logging
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Query
+
+from .ask import clear_answer_cache
 
 logger = logging.getLogger("fitqa.knowledge")
 
@@ -39,10 +42,24 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt'}
 
 
+def _sanitize_filename(filename: str) -> str:
+    """清理文件名，防止路径遍历攻击。"""
+    # 移除路径分隔符和危险字符
+    filename = os.path.basename(filename)  # 移除目录路径
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', filename)  # 替换危险字符
+    filename = re.sub(r'\.{2,}', '_', filename)  # 替换连续点号
+    filename = filename.strip('. ')  # 移除首尾的点和空格
+    if not filename:
+        filename = "unnamed_file"
+    return filename
+
+
 @router.get("/knowledge/list", response_model=list[KnowledgeItem])
-async def knowledge_list():
-    """获取所有知识条目。"""
-    return get_all_knowledge()
+async def knowledge_list(request: Request):
+    """获取所有知识条目（静态 + 当前用户的动态）。"""
+    from api.auth import get_optional_user
+    user = get_optional_user(request)
+    return get_all_knowledge(user_id=user["id"] if user else None)
 
 
 @router.get("/knowledge/categories", response_model=list[CategoryInfo])
@@ -71,23 +88,25 @@ async def import_knowledge(
     - url: 来源链接（可选，应用到所有导入条目）
     - source: 自定义来源（可选，默认使用文档名）
     """
-    require_user(request)
+    user = require_user(request)
     total_added = 0
     total_skipped_dup = 0
     skipped_files = []
     messages = []
 
     for file in files:
-        ext = Path(file.filename).suffix.lower()
+        # 清理文件名，防止路径遍历攻击
+        safe_filename = _sanitize_filename(file.filename)
+        ext = Path(safe_filename).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             skipped_files.append(f"{file.filename}(格式不支持)")
             continue
 
-        if is_source_imported(file.filename):
+        if is_source_imported(file.filename, user["id"]):
             skipped_files.append(f"{file.filename}(已导入过)")
             continue
 
-        file_path = UPLOAD_DIR / file.filename
+        file_path = UPLOAD_DIR / safe_filename
         try:
             content = await file.read()
             if len(content) > MAX_FILE_SIZE:
@@ -157,13 +176,13 @@ async def import_knowledge(
         deduped = []
         skipped_duplicates = 0
         for entry in entries:
-            similar = find_similar_entries(entry.get("title", ""), entry.get("content", ""))
+            similar = find_similar_entries(entry.get("title", ""), entry.get("content", ""), user_id=user["id"])
             if similar:
                 skipped_duplicates += 1
                 continue
             deduped.append(entry)
 
-        added = add_knowledge_entries(deduped)
+        added = add_knowledge_entries(deduped, user_id=user["id"])
         total_added += added
         total_skipped_dup += skipped_duplicates
         messages.append(f"{file.filename}: 导入 {added} 条")
@@ -171,6 +190,7 @@ async def import_knowledge(
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
+        clear_answer_cache()
     except Exception as e:
         logger.warning(f"[Import] Index rebuild failed: {e}")
 
@@ -196,23 +216,25 @@ async def import_knowledge(
 
 
 @router.get("/knowledge/entries", response_model=List[DynamicEntryItem])
-async def list_dynamic_entries():
-    """获取动态导入的知识条目列表。"""
-    return get_dynamic_entries_list()
+async def list_dynamic_entries(request: Request):
+    """获取当前用户动态导入的知识条目列表（需登录）。"""
+    user = require_user(request)
+    return get_dynamic_entries_list(user["id"])
 
 
 @router.delete("/knowledge/entries/{entry_id}")
 async def delete_dynamic_entry(entry_id: str, request: Request, rebuild: bool = Query(True)):
-    """删除单条动态知识（需登录）。rebuild=False 时跳过索引重建。"""
-    require_user(request)
-    success = delete_entry(entry_id)
+    """删除当前用户的单条动态知识（需登录）。rebuild=False 时跳过索引重建。"""
+    user = require_user(request)
+    success = delete_entry(entry_id, user["id"])
     if not success:
-        raise HTTPException(status_code=404, detail="条目不存在")
+        raise HTTPException(status_code=404, detail="条目不存在或无权删除")
 
     if rebuild:
         try:
             hybrid = request.app.state.hybrid_retriever
             hybrid.rebuild_all()
+            clear_answer_cache()
         except Exception as e:
             logger.warning(f"[Delete] Index rebuild failed: {e}")
         return {"status": "ok", "message": "条目已删除，索引已重建"}
@@ -227,8 +249,9 @@ async def rebuild_index(request: Request):
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
+        clear_answer_cache()
         total = len(get_all_knowledge())
-        return {"status": "ok", "message": f"索引重建完成，共 {total} 条知识"}
+        return {"status": "ok", "message": f"索引重建完成，共 {total} 条知识，回答缓存已清空"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"索引重建失败: {e}")
 
@@ -236,7 +259,7 @@ async def rebuild_index(request: Request):
 @router.post("/knowledge/entries")
 async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
     """手动新增知识条目（需登录）。split_enabled=True 时按 split_method 拆分内容为多条。"""
-    require_user(request)
+    user = require_user(request)
     import json
     tags_str = json.dumps(entry.tags, ensure_ascii=False) if entry.tags else "[]"
 
@@ -263,7 +286,7 @@ async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
         for e in entries:
             e["tags"] = tags_str
             e["url"] = entry.url
-        added = add_knowledge_entries(entries)
+        added = add_knowledge_entries(entries, user_id=user["id"])
         if added == 0:
             raise HTTPException(status_code=400, detail="未能从内容中拆分出知识条目")
         entry_id = f"分片{added}条"
@@ -276,12 +299,14 @@ async def create_knowledge_entry(entry: CreateEntryRequest, request: Request):
             source=entry.source,
             url=entry.url,
             tags=tags_str,
+            user_id=user["id"],
         )
         message = "知识条目已添加"
 
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
+        clear_answer_cache()
     except Exception as e:
         logger.warning(f"[Create] Index rebuild failed: {e}")
 
@@ -328,6 +353,7 @@ async def update_knowledge_entries_batch(request: Request):
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
+        clear_answer_cache()
     except Exception as e:
         logger.warning(f"[BatchUpdate] Index rebuild failed: {e}")
 
@@ -336,12 +362,12 @@ async def update_knowledge_entries_batch(request: Request):
 
 @router.put("/knowledge/entries/{entry_id}")
 async def update_knowledge_entry(entry_id: str, entry: UpdateEntryRequest, request: Request):
-    """编辑知识条目（需登录）。"""
-    require_user(request)
+    """编辑当前用户的知识条目（需登录）。"""
+    user = require_user(request)
     import json
-    existing = get_entry_by_id(entry_id)
+    existing = get_entry_by_id(entry_id, user["id"])
     if not existing:
-        raise HTTPException(status_code=404, detail="条目不存在")
+        raise HTTPException(status_code=404, detail="条目不存在或无权编辑")
 
     tags_str = json.dumps(entry.tags, ensure_ascii=False) if entry.tags else "[]"
     success = update_entry(
@@ -352,6 +378,7 @@ async def update_knowledge_entry(entry_id: str, entry: UpdateEntryRequest, reque
         source=entry.source,
         url=entry.url,
         tags=tags_str,
+        user_id=user["id"],
     )
 
     if not success:
@@ -360,6 +387,7 @@ async def update_knowledge_entry(entry_id: str, entry: UpdateEntryRequest, reque
     try:
         hybrid = request.app.state.hybrid_retriever
         hybrid.rebuild_all()
+        clear_answer_cache()
     except Exception as e:
         logger.warning(f"[Update] Index rebuild failed: {e}")
 
@@ -379,3 +407,227 @@ async def clear_unanswered(request: Request):
     require_user(request)
     cleared = clear_unanswered_questions()
     return {"status": "ok", "message": f"已清空 {cleared} 条记录"}
+
+
+# ==================== 知识版本管理 ====================
+
+@router.get("/knowledge/entries/{entry_id}/versions")
+async def get_entry_versions(entry_id: str):
+    """获取知识条目的所有版本。"""
+    from database import get_knowledge_versions
+    versions = get_knowledge_versions(entry_id)
+    return {"entry_id": entry_id, "versions": versions}
+
+
+@router.get("/knowledge/versions/{version_id}")
+async def get_version_detail(version_id: int):
+    """获取版本详情。"""
+    from database import get_knowledge_version
+    version = get_knowledge_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    return version
+
+
+@router.post("/knowledge/versions/{version_id}/restore")
+async def restore_version(version_id: int, request: Request):
+    """恢复到指定版本（需登录）。"""
+    require_user(request)
+    from database import restore_knowledge_version
+    success = restore_knowledge_version(version_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="版本不存在或恢复失败")
+    try:
+        hybrid = request.app.state.hybrid_retriever
+        hybrid.rebuild_all()
+        clear_answer_cache()
+    except Exception as e:
+        logger.warning(f"[Restore] Index rebuild failed: {e}")
+    return {"status": "ok", "message": "已恢复到指定版本"}
+
+
+# ==================== 知识导出 ====================
+
+@router.post("/knowledge/export")
+async def export_knowledge_json(request: Request):
+    """
+    导出知识库（JSON/CSV/Markdown/PDF/Word/TXT 格式）。
+
+    请求体: {"format": "json" | "csv" | "markdown" | "pdf" | "docx" | "txt"}
+    """
+    require_user(request)
+    from database import export_knowledge
+    body = await request.json()
+    fmt = body.get("format", "json")
+    supported = ("json", "csv", "markdown", "pdf", "docx", "txt")
+    if fmt not in supported:
+        raise HTTPException(status_code=400, detail=f"格式错误，支持 {', '.join(supported)}")
+    
+    if fmt == "pdf":
+        from database import export_knowledge_pdf
+        from fastapi.responses import Response
+        content_bytes = export_knowledge_pdf()
+        return Response(
+            content=content_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="fitqa_knowledge.pdf"'},
+        )
+
+    if fmt == "docx":
+        from database import export_knowledge_docx
+        from fastapi.responses import Response
+        content_bytes = export_knowledge_docx()
+        return Response(
+            content=content_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": 'attachment; filename="fitqa_knowledge.docx"'},
+        )
+    
+    content = export_knowledge(fmt)
+    mime_map = {
+        "json": "application/json", 
+        "csv": "text/csv", 
+        "markdown": "text/markdown",
+        "txt": "text/plain",
+    }
+    ext_map = {
+        "json": "json", 
+        "csv": "csv", 
+        "markdown": "md", 
+        "txt": "txt",
+    }
+    from fastapi.responses import Response
+    return Response(
+        content=content,
+        media_type=mime_map[fmt],
+        headers={"Content-Disposition": f'attachment; filename="fitqa_knowledge.{ext_map[fmt]}"'},
+    )
+
+
+# ==================== 导入预览 ====================
+
+@router.post("/knowledge/import/preview")
+async def preview_import(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    split_method: str = Form("title"),
+    default_category: str = Form("未分类"),
+):
+    """
+    预览导入：解析文档但不入库，返回将生成的条目预览列表。
+    """
+    require_user(request)
+    previews = []
+
+    for file in files:
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            continue
+
+        file_path = UPLOAD_DIR / file.filename
+        content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            continue
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        try:
+            text = parse_file(str(file_path))
+        except Exception:
+            continue
+
+        reset_counter()
+
+        if split_method == "title":
+            entries = split_by_title(text, file.filename, default_category)
+        elif split_method == "length":
+            entries = split_by_length(text, file.filename, default_category)
+        elif split_method == "none":
+            entries = split_by_none(text, file.filename, default_category)
+        else:
+            entries = split_by_paragraph(text, file.filename, default_category)
+
+        for entry in entries:
+            content_full = entry["content"]
+            previews.append({
+                "title": entry["title"],
+                "category": entry["category"],
+                "content_preview": content_full[:150] + ("..." if len(content_full) > 150 else ""),
+                "content_full": content_full,
+            })
+
+    return {"filename": files[0].filename if files else "", "entries": previews, "total_count": len(previews)}
+
+
+# ==================== 分类关键词管理 ====================
+
+@router.get("/knowledge/categories/keywords")
+async def get_category_keywords():
+    """获取所有分类及关键词。"""
+    from database import get_all_category_keywords
+    return {"categories": get_all_category_keywords()}
+
+
+@router.post("/knowledge/categories/keywords")
+async def add_category(request: Request):
+    """
+    添加新分类（需登录）。
+
+    请求体: {"category": "增肌"}
+    """
+    require_user(request)
+    from database import save_category_keywords, get_all_category_keywords
+    body = await request.json()
+    category = body.get("category", "").strip()
+    if not category:
+        raise HTTPException(status_code=400, detail="分类名称不能为空")
+    existing = get_all_category_keywords()
+    if any(c["category"] == category for c in existing):
+        raise HTTPException(status_code=400, detail=f"分类 '{category}' 已存在")
+    save_category_keywords(category, [])
+    return {"status": "ok", "message": f"分类 '{category}' 已添加", "category": category}
+
+
+@router.put("/knowledge/categories/keywords")
+async def update_category_keywords(request: Request):
+    """
+    更新分类关键词（需登录）。
+
+    请求体: {"categories": [{"category": "力量训练", "keywords": ["深蹲", "硬拉"]}, ...]}
+    """
+    require_user(request)
+    from database import save_category_keywords
+    body = await request.json()
+    categories = body.get("categories", [])
+    for cat in categories:
+        if cat.get("category") and isinstance(cat.get("keywords"), list):
+            save_category_keywords(cat["category"], cat["keywords"])
+    return {"status": "ok", "message": "分类关键词已更新"}
+
+
+@router.put("/knowledge/categories/{category}")
+async def update_single_category_keywords(category: str, request: Request):
+    """
+    更新单个分类的关键词（需登录）。
+
+    请求体: {"keywords": ["深蹲", "硬拉"]}
+    """
+    require_user(request)
+    from database import save_category_keywords
+    body = await request.json()
+    keywords = body.get("keywords", [])
+    if not isinstance(keywords, list):
+        raise HTTPException(status_code=400, detail="keywords 必须是列表")
+    save_category_keywords(category, keywords)
+    return {"status": "ok", "message": f"分类 '{category}' 关键词已更新"}
+
+
+@router.delete("/knowledge/categories/{category}")
+async def delete_category_keyword(category: str, request: Request):
+    """删除分类（需登录）。"""
+    require_user(request)
+    from database import delete_category
+    success = delete_category(category)
+    if not success:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    return {"status": "ok", "message": f"分类 '{category}' 已删除"}

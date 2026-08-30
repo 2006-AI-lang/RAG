@@ -34,19 +34,25 @@ def resolve_llm_config(user_id: Optional[int] = None) -> dict:
         try:
             from database import get_active_model, get_user_mode
             active = get_active_model(user_id)
+            logger.info(f"[LLMConfig] user_id={user_id}, active_model_found={active is not None}")
             if active and active.get("api_key_encrypted"):
                 api_key = settings.decrypt_api_key(active["api_key_encrypted"])
+                logger.info(f"[LLMConfig] api_key_decrypted={'***' if api_key else 'EMPTY'}, model_name={active.get('model_name')}")
                 if api_key:
                     mode = get_user_mode(user_id)
+                    logger.info(f"[LLMConfig] user_mode={mode}, is_mock={mode != 'real'}")
                     return {
                         "is_mock": mode != "real",
                         "base_url": (active["base_url"] or settings.OPENAI_BASE_URL).rstrip("/"),
                         "api_key": api_key,
                         "model_name": active["model_name"] or settings.MODEL_NAME,
                     }
+            else:
+                logger.info(f"[LLMConfig] No active model or empty api_key_encrypted for user {user_id}")
         except Exception as e:
             logger.warning(f"[LLMConfig] Failed to resolve user config: {e}")
 
+    logger.info(f"[LLMConfig] Falling back to global config: is_mock={settings.is_mock_mode}, model={settings.MODEL_NAME}")
     return {
         "is_mock": settings.is_mock_mode,
         "base_url": settings.OPENAI_BASE_URL.rstrip("/"),
@@ -55,20 +61,15 @@ def resolve_llm_config(user_id: Optional[int] = None) -> dict:
     }
 
 
-SYSTEM_PROMPT = (
-    "你是专业的智能健身教练。只能根据给定的(系统资料)回答."
-    "如果资料中没有提到相关信息，必须回答：根据当前知识库无法确定相关健身建议。"
-    "不允许脱离资料凭空捏造。"
-    "涉及运动损伤/疾病时必须在文末输出风险提示。"
-    "直接输出最终答案，不要输出任何思考过程、推理说明或'我可以/我们来看'等分析语句。"
-)
+from .prompts import get_system_prompt
 
 
 def _build_user_prompt(question: str, sources: List[Dict], history: List[Dict] = None, exercise_records: List[Dict] = None) -> str:
     """构建包含检索片段、历史对话和运动记录的用户提示词。"""
     fragments = []
-    for i, src in enumerate(sources, 1):
-        fragments.append(f"[{i}] {src['title']}\n{src['content']}")
+    for src in sources:
+        entry_id = src.get("id", "")
+        fragments.append(f"[{entry_id}] {src['title']}\n{src['content']}")
 
     context = "\n\n".join(fragments)
     parts = [f"【系统资料】\n{context}\n\n"]
@@ -103,16 +104,13 @@ def _build_mock_answer(question: str, sources: List[Dict]) -> str:
 
     parts = [
         f"【离线模式 - 基于检索片段回答】\n\n问题：{question}\n",
-        "根据知识库检索到的资料，整理摘要如下：",
+        "参考资料：",
         "",
     ]
-    for i, src in enumerate(sources, 1):
-        content = src.get("content", "")
-        snippet = content[:150] + ("..." if len(content) > 150 else "")
-        parts.append(f"**参考资料[{i}]《{src.get('title', '未命名')}》**（{src.get('category', '')}）")
-        parts.append(f"> {snippet.replace(chr(10), ' ')}")
-        parts.append("")
-    parts.append("以上内容来自知识库检索片段，建议结合权威资料进一步核实。")
+    for src in sources:
+        entry_id = src.get("id", "")
+        parts.append(f"[{entry_id}]")
+    parts.append("")
     return "\n".join(parts)
 
 
@@ -200,6 +198,7 @@ class LLMClient:
         history: List[Dict] = None,
         config: dict = None,
         exercise_records: List[Dict] = None,
+        scene: str = "auto",
     ) -> str:
         """
         调用 LLM 生成回答。
@@ -210,6 +209,8 @@ class LLMClient:
             stream: 是否流式输出（当前非 stream 统一处理）。
             history: 最近对话历史（用于多轮上下文）。
             config: 每用户 LLM 配置（is_mock/base_url/api_key/model_name）；None 时用全局配置。
+            exercise_records: 用户近期运动记录。
+            scene: 场景键（auto/general/muscle_gain/fat_loss/injury/nutrition）。
         """
         c = config or {
             "is_mock": self.is_mock,
@@ -236,11 +237,11 @@ class LLMClient:
         payload = {
             "model": c["model_name"],
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": get_system_prompt(question=question, scene=scene)},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.3,
-            "max_tokens": 2048,
+            "temperature": settings.LLM_TEMPERATURE,
+            "max_tokens": settings.LLM_MAX_TOKENS,
         }
 
         try:
@@ -257,7 +258,7 @@ class LLMClient:
                     logger.warning("[LLMClient] Model returned empty content, retrying with direct-answer instruction.")
                     retry_payload = dict(payload)
                     retry_payload["messages"] = [
-                        {"role": "system", "content": SYSTEM_PROMPT + " 立即给出最终答案正文，不要输出任何思考过程或推理说明。"},
+                        {"role": "system", "content": get_system_prompt(question=question, scene=scene) + " 立即给出最终答案正文，不要输出任何思考过程或推理说明。"},
                         {"role": "user", "content": user_prompt + "\n\n请立即直接输出答案正文，不要输出思考过程。"},
                     ]
                     resp = await client.post(url, json=retry_payload, headers=headers)
@@ -292,6 +293,7 @@ class LLMClient:
         history: List[Dict] = None,
         config: dict = None,
         exercise_records: List[Dict] = None,
+        scene: str = "auto",
     ) -> AsyncGenerator[str, None]:
         """
         流式调用 LLM，逐块返回回答文本。
@@ -301,6 +303,8 @@ class LLMClient:
             sources: 检索结果列表。
             history: 最近对话历史（用于多轮上下文）。
             config: 每用户 LLM 配置；None 时用全局配置。
+            exercise_records: 用户近期运动记录。
+            scene: 场景键。
         """
         c = config or {
             "is_mock": self.is_mock,
@@ -331,11 +335,11 @@ class LLMClient:
         payload = {
             "model": c["model_name"],
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": get_system_prompt(question=question, scene=scene)},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.3,
-            "max_tokens": 4096,
+            "temperature": settings.LLM_TEMPERATURE,
+            "max_tokens": settings.LLM_MAX_TOKENS,
             "stream": True,
         }
 

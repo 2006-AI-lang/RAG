@@ -64,7 +64,7 @@ def _validate_username(username: str) -> str:
 
 
 @router.post("/auth/register", response_model=AuthResponse)
-async def register(body: RegisterRequest):
+async def register(request: Request, body: RegisterRequest):
     """自助注册。"""
     username = _validate_username(body.username)
     if len(body.password) < 6:
@@ -80,7 +80,7 @@ async def register(body: RegisterRequest):
 
 
 @router.post("/auth/login", response_model=AuthResponse)
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
     """登录。"""
     username = body.username.strip()
     user = get_user_by_username(username)

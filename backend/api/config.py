@@ -340,3 +340,42 @@ async def remove_model(model_id: int, request: Request):
             set_user_mode(user_id, "mock")
 
     return {"status": "ok", "message": "模型已删除"}
+
+
+# ==================== 检索偏好 ====================
+
+@router.get("/config/retrieval")
+async def get_retrieval_prefs(request: Request):
+    """获取当前用户的检索偏好（未登录返回默认值）。"""
+    from models import RetrievalPreferencesResponse
+    from database import get_user_retrieval_config as get_prefs
+    user = get_optional_user(request)
+    if user:
+        prefs = get_prefs(user["id"])
+        if prefs:
+            return RetrievalPreferencesResponse(**prefs)
+    return RetrievalPreferencesResponse(
+        default_mode="hybrid",
+        default_top_k=5,
+        min_vector_score=settings.RETRIEVAL_MIN_VECTOR_SCORE,
+    )
+
+
+@router.put("/config/retrieval")
+async def update_retrieval_prefs(request: Request):
+    """更新当前用户的检索偏好（需登录）。"""
+    from models import RetrievalPreferences
+    from database import save_user_retrieval_config
+    user = get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    body = await request.json()
+    prefs = RetrievalPreferences(**body)
+    save_user_retrieval_config(
+        user_id=user["id"],
+        default_mode=prefs.default_mode,
+        default_top_k=prefs.default_top_k,
+        min_vector_score=prefs.min_vector_score,
+    )
+    return {"status": "ok", "message": "检索偏好已保存"}

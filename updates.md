@@ -148,3 +148,93 @@ curl -X POST "http://localhost:8000/knowledge/import" \
 
 **修改文件：**
 - `frontend/css/style.css` - 修改 `.knowledge-card` 和 `.knowledge-card-actions` 样式
+
+---
+
+## 2026-08-30
+
+### 1. 用户数据隔离
+
+**新增功能：**
+- 所有用户数据实现完全隔离，每位用户只能访问自己的数据
+
+**隔离范围：**
+
+| 数据类型 | 隔离方式 |
+|----------|----------|
+| 问答历史 | `user_id` 绑定，匿名用户不保存 |
+| 训练计划 | `user_id` 绑定 |
+| 运动记录 | `user_id` 绑定 |
+| 多轮会话 | `user_id` 绑定 |
+| LLM 模型配置 | `user_id` 绑定 |
+| 动态知识库 | `user_id` 绑定，每用户独立 |
+| 静态知识库 | 全局共享（36条） |
+
+**修改文件：**
+- `backend/database.py` - `qa_history`、`knowledge_entries` 表添加 `user_id` 列，所有相关函数增加 user_id 参数
+- `backend/api/ask.py` - 保存历史时传入 user_id，匿名用户不保存
+- `backend/api/history.py` - 查询/删除时绑定 user_id
+- `backend/api/knowledge.py` - 导入/编辑/删除动态知识时绑定 user_id
+- `backend/data/knowledge_base.py` - `get_all_knowledge()` 支持按 user_id 过滤动态条目
+
+---
+
+### 2. LLM 模型操作加固
+
+**安全改进：**
+- `delete_model()` 和 `update_model()` 的 SQL 语句添加 `AND user_id = ?` 条件
+- 防止并发场景下的竞态条件
+
+**修改文件：**
+- `backend/database.py` - 修改 `delete_model()` 和 `update_model()` 函数
+
+---
+
+### 3. API 速率限制
+
+**新增功能：**
+- 自定义速率限制中间件，默认 100 次/分钟
+- 注册接口限制 5 次/分钟
+- 登录接口限制 10 次/分钟
+- 问答接口限制 30 次/分钟
+
+**修改文件：**
+- `backend/main.py` - 新增 `RateLimitMiddleware` 类
+
+---
+
+### 4. 前端优化
+
+**改进：**
+- 运动记录卡片添加编辑/删除按钮
+- 训练计划标题支持完整显示（移除 CSS line-clamp）
+- 运动记录弹窗改为纯表单模式（不显示其他卡片）
+- 问答历史批量操作时禁止点击卡片查看详情
+- 导出按钮位置优化（向下展开避免超出屏幕）
+- 运动类型筛选动态匹配用户实际记录
+
+**修改文件：**
+- `frontend/js/app.js` - 修改运动记录、训练计划、问答历史相关逻辑
+- `frontend/css/style.css` - 新增运动记录卡片样式、调整导出下拉菜单位置
+
+---
+
+### 5. 文件清理
+
+**删除文件：**
+- `backend/fitqa_backup_20260817.db` - 旧数据库备份
+- `backend/error.log` - 空日志文件
+- `backend/uploads/test_fitness.txt` - 测试数据
+- `backend/uploads/test_doc.txt` - 测试数据
+- `backend/uploads/832+数据结构与模式识别+考试大纲.pdf` - 无关文件
+
+**移除依赖：**
+- `backend/requirements.txt` - 移除未使用的 `aiosqlite`
+
+---
+
+### 6. 文档更新
+
+**修改文件：**
+- `readme.md` - 更新项目结构、用户数据隔离说明、API 接口文档
+- `AGENTS.md` - 更新项目概览、用户隔离说明、依赖列表

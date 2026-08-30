@@ -31,6 +31,7 @@ def init_db():
             answer TEXT NOT NULL,
             mode TEXT NOT NULL DEFAULT 'hybrid',
             sources TEXT DEFAULT NULL,
+            user_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -94,6 +95,7 @@ def init_db():
             url TEXT DEFAULT '',
             tags TEXT DEFAULT '[]',
             import_mode TEXT DEFAULT 'direct',
+            user_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -112,9 +114,28 @@ def init_db():
             token TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP DEFAULT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
+
+    # 迁移：为旧 auth_tokens 添加 expires_at 列
+    try:
+        cursor.execute("ALTER TABLE auth_tokens ADD COLUMN expires_at TIMESTAMP DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+
+    # 迁移：为旧 qa_history 添加 user_id 列
+    try:
+        cursor.execute("ALTER TABLE qa_history ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    # 迁移：为旧 knowledge_entries 添加 user_id 列
+    try:
+        cursor.execute("ALTER TABLE knowledge_entries ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -175,29 +196,98 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            title TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '未分类',
+            content TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            url TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_retrieval_config (
+            user_id INTEGER PRIMARY KEY,
+            default_mode TEXT NOT NULL DEFAULT 'hybrid',
+            default_top_k INTEGER NOT NULL DEFAULT 5,
+            min_vector_score REAL NOT NULL DEFAULT 0.30,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS training_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            goal TEXT NOT NULL DEFAULT '',
+            level TEXT NOT NULL DEFAULT '',
+            days_per_week INTEGER DEFAULT 4,
+            content TEXT NOT NULL DEFAULT '',
+            category TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS category_keywords (
+            category TEXT PRIMARY KEY,
+            keywords TEXT NOT NULL DEFAULT '[]',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 首次初始化时插入默认分类关键词
+    cursor.execute("SELECT COUNT(*) FROM category_keywords")
+    if cursor.fetchone()[0] == 0:
+        defaults = [
+            ("力量训练", '["深蹲", "硬拉", "卧推", "推举", "划船", "哑铃", "杠铃", "力量", "RM", "复合动作", "三大项", "孤立动作"]'),
+            ("增肌", '["增肌", "肌肉增长", "肌肥大", "增重", "维度", "肌肉量", "肌肉线条"]'),
+            ("减脂", '["减脂", "减肥", "瘦身", "燃脂", "热量消耗", "体重下降", "体脂率", "瘦体重"]'),
+            ("有氧运动", '["跑步", "游泳", "骑行", "跳绳", "椭圆机", "有氧", "HIIT", "心肺", "耐力"]'),
+            ("柔韧性", '["拉伸", "瑜伽", "柔韧性", "活动度", "泡沫轴", "放松", "热身", "冷身"]'),
+            ("损伤康复", '["受伤", "损伤", "康复", "疼痛", "扭伤", "拉伤", "骨折", "恢复", "理疗"]'),
+            ("营养饮食", '["营养", "饮食", "蛋白质", "碳水", "脂肪", "补剂", "维生素", "矿物质", "食谱", "增肌餐", "减脂餐"]'),
+            ("运动计划", '["训练计划", "分化训练", "新手", "进阶", "周期", "组数", "次数", "间歇", "容量", "强度"]'),
+        ]
+        cursor.executemany(
+            "INSERT INTO category_keywords (category, keywords) VALUES (?, ?)",
+            defaults,
+        )
+
     conn.commit()
     conn.close()
 
 
-def save_history(question: str, answer: str, mode: str, sources: str = None):
-    """保存问答历史。"""
+def save_history(question: str, answer: str, mode: str, sources: str = None, user_id: int = None):
+    """保存问答历史。匿名用户(user_id=None)不保存。"""
+    if user_id is None:
+        return
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO qa_history (question, answer, mode, sources) VALUES (?, ?, ?, ?)",
-        (question, answer, mode, sources)
+        "INSERT INTO qa_history (question, answer, mode, sources, user_id) VALUES (?, ?, ?, ?, ?)",
+        (question, answer, mode, sources, user_id)
     )
     conn.commit()
     conn.close()
 
 
-def get_history(limit: int = 50):
-    """获取最近的问答历史。"""
+def get_history(user_id: int, limit: int = 50):
+    """获取当前用户的问答历史。"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, question, answer, mode, sources, created_at FROM qa_history ORDER BY id DESC LIMIT ?",
-        (limit,)
+        "SELECT id, question, answer, mode, sources, created_at FROM qa_history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
     )
     rows = cursor.fetchall()
     conn.close()
@@ -214,37 +304,37 @@ def get_history(limit: int = 50):
     ]
 
 
-def clear_history():
-    """清空历史。"""
+def clear_history(user_id: int):
+    """清空当前用户的问答历史。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM qa_history")
+    cursor.execute("DELETE FROM qa_history WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
 
-def delete_history(history_id: int) -> bool:
-    """删除单条问答历史。成功返回 True。"""
+def delete_history(history_id: int, user_id: int) -> bool:
+    """删除当前用户的单条问答历史。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM qa_history WHERE id = ?", (history_id,))
+    cursor.execute("SELECT id FROM qa_history WHERE id = ? AND user_id = ?", (history_id, user_id))
     if not cursor.fetchone():
         conn.close()
         return False
-    cursor.execute("DELETE FROM qa_history WHERE id = ?", (history_id,))
+    cursor.execute("DELETE FROM qa_history WHERE id = ? AND user_id = ?", (history_id, user_id))
     conn.commit()
     conn.close()
     return True
 
 
-def delete_history_batch(ids: List[int]) -> int:
-    """批量删除问答历史，返回实际删除条数。"""
+def delete_history_batch(ids: List[int], user_id: int) -> int:
+    """批量删除当前用户的问答历史，返回实际删除条数。"""
     if not ids:
         return 0
     conn = get_connection()
     cursor = conn.cursor()
     placeholders = ",".join("?" * len(ids))
-    cursor.execute(f"DELETE FROM qa_history WHERE id IN ({placeholders})", ids)
+    cursor.execute(f"DELETE FROM qa_history WHERE id IN ({placeholders}) AND user_id = ?", ids + [user_id])
     deleted = cursor.rowcount
     conn.commit()
     conn.close()
@@ -371,7 +461,7 @@ def delete_model(model_id: int, user_id: Optional[int] = None) -> bool:
     if not cursor.fetchone():
         conn.close()
         return False
-    cursor.execute("DELETE FROM llm_models WHERE id = ?", (model_id,))
+    cursor.execute(f"DELETE FROM llm_models WHERE id = ? AND {where}", (model_id,) + params)
     conn.commit()
     conn.close()
     return True
@@ -387,8 +477,8 @@ def update_model(model_id: int, name: str, base_url: str, api_key_encrypted: str
         conn.close()
         return False
     cursor.execute(
-        "UPDATE llm_models SET name = ?, base_url = ?, api_key_encrypted = ?, model_name = ? WHERE id = ?",
-        (name, base_url, api_key_encrypted, model_name, model_id)
+        f"UPDATE llm_models SET name = ?, base_url = ?, api_key_encrypted = ?, model_name = ? WHERE id = ? AND {where}",
+        (name, base_url, api_key_encrypted, model_name, model_id) + params
     )
     conn.commit()
     conn.close()
@@ -408,7 +498,7 @@ def _mask_key(encrypted_key: str) -> str:
 
 # ==================== 动态知识条目管理 ====================
 
-def add_knowledge_entries(entries: List[Dict]) -> int:
+def add_knowledge_entries(entries: List[Dict], user_id: int = None) -> int:
     """批量插入知识条目，跳过已存在的 entry_id。返回新增数量。"""
     conn = get_connection()
     cursor = conn.cursor()
@@ -416,8 +506,8 @@ def add_knowledge_entries(entries: List[Dict]) -> int:
     for entry in entries:
         try:
             cursor.execute(
-                """INSERT INTO knowledge_entries (entry_id, title, category, content, source, url, tags, import_mode, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO knowledge_entries (entry_id, title, category, content, source, url, tags, import_mode, user_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     entry["entry_id"],
                     entry["title"],
@@ -427,6 +517,7 @@ def add_knowledge_entries(entries: List[Dict]) -> int:
                     entry.get("url", ""),
                     entry.get("tags", "[]"),
                     entry.get("import_mode", "direct"),
+                    user_id,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 )
             )
@@ -438,12 +529,15 @@ def add_knowledge_entries(entries: List[Dict]) -> int:
     return added
 
 
-def get_dynamic_entries() -> List[Dict]:
-    """获取所有动态导入的知识条目。"""
+def get_dynamic_entries(user_id: int = None) -> List[Dict]:
+    """获取动态导入的知识条目。user_id=None 返回所有（用于检索），否则只返回当前用户的。"""
     import json
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT entry_id, title, category, content, source, url, tags, created_at FROM knowledge_entries ORDER BY id")
+    if user_id is not None:
+        cursor.execute("SELECT entry_id, title, category, content, source, url, tags, created_at FROM knowledge_entries WHERE user_id = ? ORDER BY id", (user_id,))
+    else:
+        cursor.execute("SELECT entry_id, title, category, content, source, url, tags, created_at FROM knowledge_entries ORDER BY id")
     rows = cursor.fetchall()
     conn.close()
     result = []
@@ -468,11 +562,11 @@ def get_dynamic_entries() -> List[Dict]:
     return result
 
 
-def get_dynamic_entries_list() -> List[Dict]:
-    """获取动态条目列表（含元数据）。"""
+def get_dynamic_entries_list(user_id: int) -> List[Dict]:
+    """获取当前用户的动态条目列表（含元数据）。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT entry_id, title, category, content, source, import_mode, created_at FROM knowledge_entries ORDER BY id DESC")
+    cursor.execute("SELECT entry_id, title, category, content, source, import_mode, created_at FROM knowledge_entries WHERE user_id = ? ORDER BY id DESC", (user_id,))
     rows = cursor.fetchall()
     conn.close()
     return [
@@ -489,31 +583,32 @@ def get_dynamic_entries_list() -> List[Dict]:
     ]
 
 
-def delete_entry(entry_id: str) -> bool:
-    """删除单条动态知识。成功返回 True。"""
+def delete_entry(entry_id: str, user_id: int) -> bool:
+    """删除当前用户的单条动态知识（同时删除版本记录）。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM knowledge_entries WHERE entry_id = ?", (entry_id,))
+    cursor.execute("SELECT id FROM knowledge_entries WHERE entry_id = ? AND user_id = ?", (entry_id, user_id))
     if not cursor.fetchone():
         conn.close()
         return False
-    cursor.execute("DELETE FROM knowledge_entries WHERE entry_id = ?", (entry_id,))
+    cursor.execute("DELETE FROM knowledge_entries WHERE entry_id = ? AND user_id = ?", (entry_id, user_id))
+    cursor.execute("DELETE FROM knowledge_versions WHERE entry_id = ?", (entry_id,))
     conn.commit()
     conn.close()
     return True
 
 
-def is_source_imported(source: str) -> bool:
-    """检查该来源文件是否已导入。"""
+def is_source_imported(source: str, user_id: int) -> bool:
+    """检查该来源文件是否已被当前用户导入。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM knowledge_entries WHERE source = ?", (source,))
+    cursor.execute("SELECT COUNT(*) FROM knowledge_entries WHERE source = ? AND user_id = ?", (source, user_id))
     count = cursor.fetchone()[0]
     conn.close()
     return count > 0
 
 
-def add_single_entry(title: str, category: str, content: str, source: str = "", url: str = "", tags: str = "[]") -> str:
+def add_single_entry(title: str, category: str, content: str, source: str = "", url: str = "", tags: str = "[]", user_id: int = None) -> str:
     """手动新增单条知识条目，返回新 entry_id。"""
     import json
     conn = get_connection()
@@ -524,38 +619,52 @@ def add_single_entry(title: str, category: str, content: str, source: str = "", 
     entry_id = f"E{next_num:03d}"
 
     cursor.execute(
-        """INSERT INTO knowledge_entries (entry_id, title, category, content, source, url, tags, import_mode, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (entry_id, title, category, content, source, url, tags, "manual", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        """INSERT INTO knowledge_entries (entry_id, title, category, content, source, url, tags, import_mode, user_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (entry_id, title, category, content, source, url, tags, "manual", user_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
     conn.commit()
     conn.close()
     return entry_id
 
 
-def update_entry(entry_id: str, title: str, category: str, content: str, source: str = "", url: str = "", tags: str = "[]") -> bool:
-    """编辑知识条目。成功返回 True。"""
+def update_entry(entry_id: str, title: str, category: str, content: str, source: str = "", url: str = "", tags: str = "[]", user_id: int = None) -> bool:
+    """编辑当前用户的知识条目（自动保存旧版本）。成功返回 True。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM knowledge_entries WHERE entry_id = ?", (entry_id,))
-    if not cursor.fetchone():
+    cursor.execute("SELECT id, title, category, content, source, url FROM knowledge_entries WHERE entry_id = ? AND user_id = ?", (entry_id, user_id))
+    old = cursor.fetchone()
+    if not old:
         conn.close()
         return False
 
+    # 保存旧版本
+    save_knowledge_version(
+        entry_id=entry_id,
+        title=old["title"],
+        category=old["category"],
+        content=old["content"],
+        source=old["source"] or "",
+        url=old["url"] or "",
+    )
+
     cursor.execute(
-        """UPDATE knowledge_entries SET title=?, category=?, content=?, source=?, url=?, tags=? WHERE entry_id=?""",
-        (title, category, content, source, url, tags, entry_id)
+        """UPDATE knowledge_entries SET title=?, category=?, content=?, source=?, url=?, tags=? WHERE entry_id=? AND user_id=?""",
+        (title, category, content, source, url, tags, entry_id, user_id)
     )
     conn.commit()
     conn.close()
     return True
 
 
-def get_entry_by_id(entry_id: str) -> Optional[Dict]:
-    """根据 entry_id 获取单条知识。"""
+def get_entry_by_id(entry_id: str, user_id: int = None) -> Optional[Dict]:
+    """根据 entry_id 获取单条知识。user_id 不为 None 时校验归属。"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM knowledge_entries WHERE entry_id = ?", (entry_id,))
+    if user_id is not None:
+        cursor.execute("SELECT * FROM knowledge_entries WHERE entry_id = ? AND user_id = ?", (entry_id, user_id))
+    else:
+        cursor.execute("SELECT * FROM knowledge_entries WHERE entry_id = ?", (entry_id,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -591,9 +700,10 @@ def update_entries_batch(entry_ids: List[str], fields: Dict) -> int:
     return updated
 
 
-def find_similar_entries(title: str, content: str, threshold: float = 0.85) -> List[Dict]:
+def find_similar_entries(title: str, content: str, threshold: float = 0.85, user_id: int = None) -> List[Dict]:
     """
     查找与给定标题/内容高度相似（重复）的已有条目。
+    user_id 不为 None 时只查当前用户的条目。
 
     使用 difflib 计算标题与内容文本的相似度，超过阈值视为重复。
     返回相似条目的列表（含 entry_id、title、similarity）。
@@ -601,7 +711,10 @@ def find_similar_entries(title: str, content: str, threshold: float = 0.85) -> L
     import difflib
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT entry_id, title, content FROM knowledge_entries")
+    if user_id is not None:
+        cursor.execute("SELECT entry_id, title, content FROM knowledge_entries WHERE user_id = ?", (user_id,))
+    else:
+        cursor.execute("SELECT entry_id, title, content FROM knowledge_entries")
     rows = cursor.fetchall()
     conn.close()
 
@@ -660,30 +773,52 @@ def get_user_by_username(username: str) -> Optional[Dict]:
 
 
 def create_auth_token(user_id: int) -> str:
-    """为用户生成登录令牌。"""
+    """为用户生成登录令牌（7天过期）。"""
     import secrets
+    from datetime import timedelta
     token = secrets.token_hex(32)
+    expires_at = (datetime.now() + timedelta(days=settings.TOKEN_EXPIRE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO auth_tokens (token, user_id) VALUES (?, ?)", (token, user_id))
+    cursor.execute(
+        "INSERT INTO auth_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+        (token, user_id, expires_at),
+    )
     conn.commit()
     conn.close()
     return token
 
 
 def get_user_by_token(token: str) -> Optional[Dict]:
-    """根据令牌获取用户（无效返回 None）。"""
+    """根据令牌获取用户（过期或无效返回 None）。"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT u.id, u.username FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?",
+        "SELECT u.id, u.username, t.expires_at FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?",
         (token,),
     )
     row = cursor.fetchone()
     conn.close()
     if not row:
         return None
+    if row["expires_at"]:
+        from datetime import datetime as _dt
+        if _dt.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S") < _dt.now():
+            return None
     return {"id": row["id"], "username": row["username"]}
+
+
+def cleanup_expired_tokens() -> int:
+    """清理过期的 auth_tokens。返回删除数量。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM auth_tokens WHERE expires_at IS NOT NULL AND expires_at < datetime('now', 'localtime')"
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def delete_auth_token(token: str) -> bool:
@@ -925,21 +1060,78 @@ def add_exercise_record(user_id: int, exercise_type: str, duration: int = 0,
     return rid
 
 
-def list_exercise_records(user_id: int, limit: int = 10) -> List[Dict]:
-    """获取用户最近的运动记录（按日期/ID 倒序）。"""
+def list_exercise_records(user_id: int, limit: int = 100, offset: int = 0,
+                          exercise_type: str = "", duration_min: int = 0, duration_max: int = 0,
+                          intensity: str = "", date_from: str = "", date_to: str = "",
+                          keyword: str = "") -> List[Dict]:
+    """获取用户运动记录，支持筛选。"""
     conn = get_connection()
     cursor = conn.cursor()
+    conditions = ["user_id = ?"]
+    params = [user_id]
+    if exercise_type:
+        conditions.append("exercise_type LIKE ?")
+        params.append(f"%{exercise_type}%")
+    if intensity:
+        conditions.append("intensity = ?")
+        params.append(intensity)
+    if duration_min > 0:
+        conditions.append("duration >= ?")
+        params.append(duration_min)
+    if duration_max > 0:
+        conditions.append("duration <= ?")
+        params.append(duration_max)
+    if date_from:
+        conditions.append("date(record_date) >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("date(record_date) <= ?")
+        params.append(date_to)
+    if keyword:
+        conditions.append("(exercise_type LIKE ? OR notes LIKE ?)")
+        kw = f"%{keyword}%"
+        params.extend([kw, kw])
+    where = " AND ".join(conditions)
     cursor.execute(
-        """SELECT id, exercise_type, duration, intensity, notes, record_date, created_at
+        f"""SELECT id, exercise_type, duration, intensity, notes, record_date, created_at
            FROM exercise_records
-           WHERE user_id = ?
+           WHERE {where}
            ORDER BY record_date DESC, id DESC
-           LIMIT ?""",
-        (user_id, limit),
+           LIMIT ? OFFSET ?""",
+        (*params, limit, offset),
     )
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def update_exercise_record(user_id: int, record_id: int, exercise_type: str = "",
+                           duration: int = 0, intensity: str = "", notes: str = "",
+                           record_date: str = "") -> bool:
+    """更新运动记录。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    existing = cursor.execute(
+        "SELECT * FROM exercise_records WHERE id = ? AND user_id = ?",
+        (record_id, user_id),
+    ).fetchone()
+    if not existing:
+        conn.close()
+        return False
+    new_type = exercise_type if exercise_type else existing["exercise_type"]
+    new_duration = duration if duration else existing["duration"]
+    new_intensity = intensity if intensity else existing["intensity"]
+    new_notes = notes if notes else existing["notes"]
+    new_date = record_date if record_date else existing["record_date"]
+    cursor.execute(
+        """UPDATE exercise_records SET exercise_type=?, duration=?, intensity=?, notes=?, record_date=?
+           WHERE id=? AND user_id=?""",
+        (new_type, new_duration, new_intensity, new_notes, new_date, record_id, user_id),
+    )
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def delete_exercise_record(user_id: int, record_id: int) -> bool:
@@ -954,3 +1146,469 @@ def delete_exercise_record(user_id: int, record_id: int) -> bool:
     conn.commit()
     conn.close()
     return deleted
+
+
+def batch_delete_exercise_records(record_ids: list, user_id: int) -> int:
+    """批量删除运动记录，返回删除数量。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    placeholders = ",".join("?" for _ in record_ids)
+    cursor.execute(
+        f"DELETE FROM exercise_records WHERE id IN ({placeholders}) AND user_id = ?",
+        (*record_ids, user_id),
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ==================== 训练计划 ====================
+
+def add_training_plan(user_id: int, title: str, goal: str, level: str,
+                      days_per_week: int, content: str, category: str = "") -> int:
+    """添加训练计划，返回 ID。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO training_plans (user_id, title, goal, level, days_per_week, content, category)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, title, goal, level, days_per_week, content, category),
+    )
+    rid = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return rid
+
+
+def update_training_plan(plan_id: int, user_id: int, title: str, goal: str, level: str,
+                         days_per_week: int, content: str, category: str = "") -> bool:
+    """更新训练计划。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """UPDATE training_plans SET title=?, goal=?, level=?, days_per_week=?, content=?, category=?,
+           updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?""",
+        (title, goal, level, days_per_week, content, category, plan_id, user_id),
+    )
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def delete_training_plan(plan_id: int, user_id: int) -> bool:
+    """删除单个训练计划。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM training_plans WHERE id = ? AND user_id = ?",
+        (plan_id, user_id),
+    )
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def batch_delete_training_plans(plan_ids: list, user_id: int) -> int:
+    """批量删除训练计划，返回删除数量。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    placeholders = ",".join("?" for _ in plan_ids)
+    cursor.execute(
+        f"DELETE FROM training_plans WHERE id IN ({placeholders}) AND user_id = ?",
+        (*plan_ids, user_id),
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def batch_update_training_plans(plan_ids: list, user_id: int, goal: str = "",
+                                level: str = "", days_per_week: int = 0,
+                                category: str = "") -> int:
+    """批量更新训练计划，返回更新数量。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    set_parts = []
+    params = []
+    if goal:
+        set_parts.append("goal = ?")
+        params.append(goal)
+    if level:
+        set_parts.append("level = ?")
+        params.append(level)
+    if days_per_week > 0:
+        set_parts.append("days_per_week = ?")
+        params.append(days_per_week)
+    if category:
+        set_parts.append("category = ?")
+        params.append(category)
+    if not set_parts:
+        conn.close()
+        return 0
+    set_parts.append("updated_at = CURRENT_TIMESTAMP")
+    placeholders = ",".join("?" for _ in plan_ids)
+    params.extend([*plan_ids, user_id])
+    cursor.execute(
+        f"UPDATE training_plans SET {', '.join(set_parts)} "
+        f"WHERE id IN ({placeholders}) AND user_id = ?",
+        params,
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def list_training_plans(user_id: int, category: str = "", date_from: str = "", date_to: str = "",
+                        keyword: str = "", goal: str = "", level: str = "",
+                        days_per_week: int = 0, limit: int = 100, offset: int = 0) -> List[Dict]:
+    """列出训练计划，支持筛选。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    conditions = ["user_id = ?"]
+    params = [user_id]
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+    if goal:
+        conditions.append("goal LIKE ?")
+        params.append(f"%{goal}%")
+    if level:
+        conditions.append("level = ?")
+        params.append(level)
+    if days_per_week > 0:
+        conditions.append("days_per_week = ?")
+        params.append(days_per_week)
+    if date_from:
+        conditions.append("date(created_at) >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("date(created_at) <= ?")
+        params.append(date_to)
+    if keyword:
+        conditions.append("(title LIKE ? OR content LIKE ? OR goal LIKE ?)")
+        kw = f"%{keyword}%"
+        params.extend([kw, kw, kw])
+    where = " AND ".join(conditions)
+    cursor.execute(
+        f"SELECT id, title, goal, level, days_per_week, content, category, created_at, updated_at "
+        f"FROM training_plans WHERE {where} ORDER BY updated_at DESC, created_at DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_training_plan(plan_id: int, user_id: int) -> Optional[Dict]:
+    """获取单个训练计划详情。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, title, goal, level, days_per_week, content, category, created_at, updated_at "
+        "FROM training_plans WHERE id = ? AND user_id = ?",
+        (plan_id, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_training_plan_categories(user_id: int) -> List[str]:
+    """获取用户训练计划的所有分类。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT DISTINCT category FROM training_plans WHERE user_id = ? AND category != '' ORDER BY category",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [row["category"] for row in rows]
+
+
+# ==================== 知识版本管理 ====================
+
+def save_knowledge_version(entry_id: str, title: str, category: str, content: str, source: str = "", url: str = "") -> int:
+    """保存知识条目版本。返回新版本号。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT MAX(version) FROM knowledge_versions WHERE entry_id = ?",
+        (entry_id,),
+    )
+    row = cursor.fetchone()
+    new_version = (row[0] or 0) + 1
+    cursor.execute(
+        """INSERT INTO knowledge_versions (entry_id, version, title, category, content, source, url)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (entry_id, new_version, title, category, content, source, url),
+    )
+    conn.commit()
+    conn.close()
+    return new_version
+
+
+def get_knowledge_versions(entry_id: str) -> List[Dict]:
+    """获取知识条目的所有版本（按版本号倒序）。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, entry_id, version, title, category, content, source, url, created_at
+           FROM knowledge_versions WHERE entry_id = ? ORDER BY version DESC""",
+        (entry_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_knowledge_version(version_id: int) -> Optional[Dict]:
+    """获取指定版本详情。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, entry_id, version, title, category, content, source, url, created_at FROM knowledge_versions WHERE id = ?",
+        (version_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def restore_knowledge_version(version_id: int) -> bool:
+    """将知识条目恢复到指定版本。"""
+    version = get_knowledge_version(version_id)
+    if not version:
+        return False
+    return update_entry(
+        version["entry_id"],
+        version["title"],
+        version["category"],
+        version["content"],
+        version["source"],
+        version["url"] or "",
+    )
+
+
+def delete_knowledge_versions(entry_id: str) -> int:
+    """删除知识条目的所有版本记录。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM knowledge_versions WHERE entry_id = ?", (entry_id,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ==================== 检索偏好 ====================
+
+def get_user_retrieval_config(user_id: int) -> Optional[Dict]:
+    """获取用户检索偏好。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT default_mode, default_top_k, min_vector_score FROM user_retrieval_config WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_user_retrieval_config(user_id: int, default_mode: str, default_top_k: int, min_vector_score: float):
+    """保存/更新用户检索偏好。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO user_retrieval_config (user_id, default_mode, default_top_k, min_vector_score, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            default_mode=excluded.default_mode,
+            default_top_k=excluded.default_top_k,
+            min_vector_score=excluded.min_vector_score,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (user_id, default_mode, default_top_k, min_vector_score),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ==================== 分类关键词管理 ====================
+
+def get_all_category_keywords() -> List[Dict]:
+    """获取所有分类及其关键词。"""
+    import json as _json
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT category, keywords FROM category_keywords ORDER BY category")
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "category": row["category"],
+            "keywords": _json.loads(row["keywords"]) if row["keywords"] else [],
+        }
+        for row in rows
+    ]
+
+
+def save_category_keywords(category: str, keywords: List[str]):
+    """保存/更新分类关键词。"""
+    import json as _json
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO category_keywords (category, keywords, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(category) DO UPDATE SET
+            keywords=excluded.keywords,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (category, _json.dumps(keywords, ensure_ascii=False)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_category(category: str) -> bool:
+    """删除分类。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM category_keywords WHERE category = ?", (category,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_category_names() -> List[str]:
+    """获取所有分类名称列表。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT category FROM category_keywords ORDER BY category")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row["category"] for row in rows]
+
+
+# ==================== 知识导出 ====================
+
+def export_knowledge(format: str = "json") -> str:
+    """导出知识库为 JSON / CSV / Markdown / TXT 字符串（PDF 请使用 export_knowledge_pdf）。"""
+    import json as _json
+    import csv
+    import io
+
+    entries = get_dynamic_entries()
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ID", "标题", "分类", "内容", "来源", "URL", "标签", "创建时间"])
+        for e in entries:
+            writer.writerow([
+                e["id"], e["title"], e["category"], e["content"],
+                e["source"], e["url"], ", ".join(e.get("tags", [])),
+                e["created_at"],
+            ])
+        return output.getvalue()
+    elif format == "markdown":
+        lines = [f"# FitQA 知识库导出\n\n> 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n"]
+        for e in entries:
+            lines.append(f"## {e['title']}\n\n")
+            lines.append(f"- **分类**：{e['category']}\n")
+            lines.append(f"- **来源**：{e['source']}\n")
+            if e["url"]:
+                lines.append(f"- **链接**：{e['url']}\n")
+            lines.append(f"\n{e['content']}\n\n---\n")
+        return "".join(lines)
+    elif format == "txt":
+        lines = [f"FitQA 知识库导出\n", f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n", "=" * 50 + "\n\n"]
+        for e in entries:
+            lines.append(f"标题：{e['title']}\n")
+            lines.append(f"分类：{e['category']}\n")
+            if e["source"]:
+                lines.append(f"来源：{e['source']}\n")
+            if e["url"]:
+                lines.append(f"链接：{e['url']}\n")
+            lines.append(f"\n{e['content']}\n")
+            lines.append("-" * 50 + "\n\n")
+        return "".join(lines)
+    else:
+        return _json.dumps(entries, ensure_ascii=False, indent=2)
+
+
+def export_knowledge_docx() -> bytes:
+    """导出知识库为 Word (.docx) 字节流。"""
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("FitQA 知识库导出", level=0)
+    doc.add_paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph("—" * 40)
+
+    entries = get_dynamic_entries()
+    for e in entries:
+        doc.add_heading(e["title"], level=2)
+        doc.add_paragraph(f"分类：{e['category']}")
+        doc.add_paragraph(f"来源：{e['source']}")
+        if e["url"]:
+            doc.add_paragraph(f"链接：{e['url']}")
+        doc.add_paragraph(e["content"])
+        doc.add_paragraph("—" * 40)
+
+    import io
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def export_knowledge_pdf() -> bytes:
+    """导出知识库为 PDF 字节流。"""
+    from fpdf import FPDF
+    import io
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # Use built-in core font (Helvetica) for maximum compatibility
+    # Chinese characters will render as-is (UTF-8) in fpdf2 with core fonts
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "FitQA Knowledge Base Export", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_font("Helvetica", "", 8)
+    from datetime import datetime
+    pdf.cell(0, 6, f"Export Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.ln(5)
+
+    entries = get_dynamic_entries()
+    for e in entries:
+        # Check if we need a new page
+        if pdf.get_y() > 250:
+            pdf.add_page()
+        pdf.set_font("Helvetica", "B", 12)
+        # Write title
+        pdf.multi_cell(0, 7, e["title"])
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(0, 5, f"Category: {e['category']}", new_x="LMARGIN", new_y="NEXT")
+        if e["source"]:
+            pdf.cell(0, 5, f"Source: {e['source']}", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        # Write content
+        content = e["content"].replace("\n", " ").replace("\r", " ")
+        pdf.multi_cell(0, 5, content)
+        pdf.ln(3)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+    return buf.getvalue()

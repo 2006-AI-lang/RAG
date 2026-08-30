@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FitQA - 运动健身智能问答系统</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link rel="stylesheet" href="css/style.css?v=25">
+    <link rel="stylesheet" href="css/style.css?v=40">
+    <link rel="stylesheet" href="css/responsive.css?v=1">
 </head>
 <body>
     <!-- 顶部导航 -->
@@ -27,6 +28,7 @@
             <button class="nav-btn active" data-tab="chat">智能问答</button>
             <button class="nav-btn" data-tab="compare">检索对比</button>
             <button class="nav-btn" data-tab="knowledge">知识库</button>
+            <button class="nav-btn" data-tab="training">训练计划</button>
             <button class="nav-btn" data-tab="history">问答历史</button>
         </nav>
         <div class="header-right">
@@ -136,6 +138,27 @@
                     </div>
                     <p class="setting-hint">切换到大模型模式后将使用所选模型</p>
                 </div>
+
+                <!-- 检索偏好 -->
+                <div class="setting-group">
+                    <label class="setting-label">检索偏好</label>
+                    <div class="form-row">
+                        <label class="form-label">默认返回条数</label>
+                        <div class="input-with-slider">
+                            <input type="range" id="retrievalTopKSlider" min="1" max="20" value="5" class="retrieval-slider">
+                            <input type="number" id="retrievalTopK" class="setting-input setting-input-num" min="1" max="50" value="5">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <label class="form-label">向量相似度阈值</label>
+                        <div class="input-with-slider">
+                            <input type="range" id="retrievalScoreSlider" min="0" max="100" value="30" class="retrieval-slider">
+                            <input type="number" id="retrievalScore" class="setting-input setting-input-num" min="0" max="100" value="30" step="1">
+                            <span class="input-unit">%</span>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-primary" id="btnSaveRetrievalPrefs">保存检索偏好</button>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-outline" id="btnCancelSettings">关闭</button>
@@ -208,7 +231,7 @@
                             </button>
                         </div>
                         <div class="chat-input-hint">
-                            <span class="hint-item">支持检索模式：</span>
+                            <span class="hint-item">检索模式：</span>
                             <label class="mode-switch">
                                 <input type="radio" name="searchMode" value="hybrid" checked> 混合检索
                             </label>
@@ -218,12 +241,24 @@
                             <label class="mode-switch">
                                 <input type="radio" name="searchMode" value="vector"> 向量检索
                             </label>
-                            <button class="btn btn-outline btn-sm btn-plan" id="btnTrainingPlan" title="生成训练计划">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                            <span class="hint-sep">|</span>
+                            <div class="scene-selector-wrapper">
+                                <button class="btn btn-outline btn-sm btn-scene" id="btnSceneToggle" title="选择场景">
+                                    <span id="currentSceneIcon">🎯</span>
+                                    <span id="currentSceneLabel">智能识别</span>
+                                    <svg width="10" height="10" viewBox="0 0 10 6"><polyline points="1,1 5,5 9,1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+                                </button>
+                                <div class="scene-dropdown hidden" id="sceneDropdown">
+                                    <!-- 动态填充 -->
+                                </div>
+                            </div>
+                            <span class="hint-sep">|</span>
+                            <button class="btn btn-outline btn-sm" id="btnTrainingPlanInline" title="生成训练计划">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
                                 生成训练计划
                             </button>
-                            <button class="btn btn-outline btn-sm btn-plan" id="btnExerciseRecord" title="记录运动">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            <button class="btn btn-outline btn-sm" id="btnExerciseRecord" title="记录运动">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                                 运动记录
                             </button>
                         </div>
@@ -285,6 +320,20 @@
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                             未答问题
                         </button>
+                        <div class="export-wrapper">
+                            <button class="btn btn-outline btn-sm btn-export" id="btnExportKnowledge" title="导出知识库">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                导出
+                            </button>
+                            <div class="export-dropdown hidden" id="exportDropdown">
+                                <button class="export-option" data-format="json">JSON 格式</button>
+                                <button class="export-option" data-format="csv">CSV 格式</button>
+                                <button class="export-option" data-format="markdown">Markdown 格式</button>
+                                <button class="export-option" data-format="pdf">PDF 格式</button>
+                                <button class="export-option" data-format="docx">Word 格式</button>
+                                <button class="export-option" data-format="txt">TXT 格式</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="knowledge-stats" id="knowledgeStats">
                         <span class="stat-item">知识条目：<strong id="statTotal">0</strong></span>
@@ -307,6 +356,10 @@
                     <div class="filter-tags" id="filterTags">
                         <button class="filter-tag active" data-cat="all">全部</button>
                     </div>
+                    <button class="btn btn-xs btn-ghost btn-manage-cats" id="btnManageCategories" title="管理分类">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        管理分类
+                    </button>
                 </div>
                 <div class="batch-toolbar hidden" id="knowledgeBatchBar">
                     <label class="batch-check-all">
@@ -326,7 +379,137 @@
             </div>
         </section>
 
-        <!-- 标签4：问答历史 -->
+        <!-- 标签4：训练计划 -->
+        <section class="tab-panel" id="tab-training">
+            <div class="training-container">
+                <div class="training-header">
+                    <h2>训练计划</h2>
+                    <div class="training-subtabs">
+                        <button class="training-subtab active" data-subtab="plans">生成的训练计划</button>
+                        <button class="training-subtab" data-subtab="exercises">我的运动记录</button>
+                    </div>
+                    <div class="training-actions">
+                        <button class="btn btn-primary btn-sm" id="btnTrainingAdd">
+                            <svg width="14" height="14" viewBox="0 0 16 16"><line x1="8" y1="2" x2="8" y2="14" stroke="currentColor" stroke-width="2"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2"/></svg>
+                            新增
+                        </button>
+                        <button class="btn btn-outline btn-sm" id="btnTrainingBatchOp">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                            批量操作
+                        </button>
+                        <div class="export-wrapper">
+                            <button class="btn btn-outline btn-sm btn-export" id="btnExportTrainingPlan" title="导出">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                导出
+                            </button>
+                            <div class="export-dropdown hidden" id="trainingExportDropdown">
+                                <button class="export-option" data-format="json">JSON 格式</button>
+                                <button class="export-option" data-format="csv">CSV 格式</button>
+                                <button class="export-option" data-format="markdown">Markdown 格式</button>
+                                <button class="export-option" data-format="pdf">PDF 格式</button>
+                                <button class="export-option" data-format="docx">Word 格式</button>
+                                <button class="export-option" data-format="txt">TXT 格式</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="training-toolbar" id="trainingPlansToolbar">
+                    <div class="search-box">
+                        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5.5" stroke="#999" stroke-width="1.5" fill="none"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="#999" stroke-width="1.5"/></svg>
+                        <input type="text" id="trainingSearch" placeholder="搜索训练计划...">
+                    </div>
+                    <div class="training-filters">
+                        <select id="trainingGoalFilter" class="sort-select">
+                            <option value="">训练目标</option>
+                            <option value="增肌">增肌</option>
+                            <option value="减脂">减脂</option>
+                            <option value="塑形">塑形</option>
+                            <option value="力量">力量</option>
+                            <option value="耐力">耐力</option>
+                            <option value="柔韧">柔韧</option>
+                        </select>
+                        <select id="trainingLevelFilter" class="sort-select">
+                            <option value="">经验水平</option>
+                            <option value="新手">新手</option>
+                            <option value="有经验">有经验</option>
+                        </select>
+                        <select id="trainingDaysFilter" class="sort-select">
+                            <option value="">每周天数</option>
+                            <option value="1">1天</option>
+                            <option value="2">2天</option>
+                            <option value="3">3天</option>
+                            <option value="4">4天</option>
+                            <option value="5">5天</option>
+                            <option value="6">6天</option>
+                            <option value="7">7天</option>
+                        </select>
+                        <input type="date" id="trainingDateFrom" class="sort-select" style="width:140px;" title="开始日期">
+                        <input type="date" id="trainingDateTo" class="sort-select" style="width:140px;" title="结束日期">
+                    </div>
+                </div>
+                <div class="training-toolbar hidden" id="trainingExercisesToolbar">
+                    <div class="search-box">
+                        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5.5" stroke="#999" stroke-width="1.5" fill="none"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="#999" stroke-width="1.5"/></svg>
+                        <input type="text" id="exerciseSearch" placeholder="搜索运动记录...">
+                    </div>
+                    <div class="training-filters">
+                        <select id="exerciseTypeFilter" class="sort-select">
+                            <option value="">运动类型</option>
+                        </select>
+                        <select id="exerciseDurationFilter" class="sort-select">
+                            <option value="">时长范围</option>
+                            <option value="0-30">30分钟以内</option>
+                            <option value="30-60">30-60分钟</option>
+                            <option value="60-120">1-2小时</option>
+                            <option value="120-999">2小时以上</option>
+                        </select>
+                        <select id="exerciseIntensityFilter" class="sort-select">
+                            <option value="">强度</option>
+                            <option value="高强度">高强度</option>
+                            <option value="中等">中等</option>
+                            <option value="低强度">低强度</option>
+                        </select>
+                        <input type="date" id="exerciseDateFrom" class="sort-select" style="width:140px;" title="开始日期">
+                        <input type="date" id="exerciseDateTo" class="sort-select" style="width:140px;" title="结束日期">
+                    </div>
+                </div>
+                <div class="batch-toolbar hidden" id="trainingBatchBar">
+                    <label class="batch-check-all">
+                        <input type="checkbox" id="trainingCheckAll">
+                        <span>全选</span>
+                    </label>
+                    <span class="batch-count" id="trainingBatchCount">已选 0 项</span>
+                    <div class="batch-actions">
+                        <button class="btn btn-sm btn-primary" id="btnBatchEditTraining">批量编辑</button>
+                        <button class="btn btn-sm btn-danger" id="btnConfirmBatchDeleteTraining">批量删除</button>
+                    </div>
+                    <button class="btn btn-sm btn-ghost" id="btnCancelTrainingBatch">取消</button>
+                </div>
+                <div class="training-list" id="trainingList">
+                    <div class="training-empty">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="14" y="6" width="20" height="36" rx="4" stroke="#999" stroke-width="2"/>
+                            <line x1="14" y1="14" x2="34" y2="14" stroke="#999" stroke-width="2"/>
+                            <line x1="18" y1="22" x2="30" y2="22" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="28" x2="30" y2="28" stroke="#999" stroke-width="1.5"/>
+                            <line x1="18" y1="34" x2="26" y2="34" stroke="#999" stroke-width="1.5"/>
+                        </svg>
+                        <p>暂无训练计划，点击"新增"按钮或前往智能问答界面生成训练计划</p>
+                    </div>
+                </div>
+                <div class="exercise-list hidden" id="exerciseList">
+                    <div class="training-empty">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <circle cx="24" cy="24" r="16" stroke="#999" stroke-width="2" fill="none"/>
+                            <path d="M24 16v8l6 4" stroke="#999" stroke-width="2" fill="none"/>
+                        </svg>
+                        <p>暂无运动记录，点击"新增"按钮或前往智能问答界面添加运动记录</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 标签5：问答历史 -->
         <section class="tab-panel" id="tab-history">
             <div class="history-container">
                 <div class="history-header">
@@ -491,8 +674,24 @@
                     </div>
                     <div class="import-actions">
                         <button class="btn btn-primary" id="btnStartImport">开始导入</button>
+                        <button class="btn btn-outline" id="btnPreviewImport" style="display:none;">预览导入</button>
                     </div>
                     <div class="import-result hidden" id="importResult"></div>
+                    <div class="import-preview hidden" id="importPreview">
+                        <div class="import-preview-header">
+                            <span class="import-preview-title" id="importPreviewTitle">导入预览</span>
+                            <span class="import-preview-count" id="importPreviewCount"></span>
+                        </div>
+                        <div class="import-preview-list" id="importPreviewList"></div>
+                        <div class="import-preview-actions">
+                            <label class="batch-check-all">
+                                <input type="checkbox" id="importPreviewCheckAll" checked>
+                                <span>全选</span>
+                            </label>
+                            <button class="btn btn-primary" id="btnConfirmImport">确认导入选中条目</button>
+                            <button class="btn btn-outline" id="btnCancelPreview">取消</button>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -623,7 +822,7 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label class="form-label">训练目标</label>
+                    <label class="form-label">训练目标 <span style="color:var(--text-muted);font-weight:400;font-size:12px;">（选择或手动输入）</span></label>
                     <input type="text" id="planGoal" class="form-input" placeholder="如：增肌、减脂、提升体能" list="planGoalList" autocomplete="off">
                     <datalist id="planGoalList"></datalist>
                 </div>
@@ -642,6 +841,10 @@
                         <option value="4"><option value="5"><option value="6"><option value="7">
                     </datalist>
                 </div>
+                <div class="form-group">
+                    <label class="form-label">额外要求 <span style="color:var(--text-muted);font-weight:400;font-size:12px;">（可选）</span></label>
+                    <textarea id="planRequirements" class="form-textarea" rows="3" placeholder="如：以有氧为主、避免膝关节动作、训练时间控制在45分钟以内..."></textarea>
+                </div>
                 <button class="btn btn-primary btn-block" id="btnGeneratePlan">生成计划</button>
             </div>
         </div>
@@ -649,15 +852,16 @@
 
     <!-- 运动记录弹窗 -->
     <div class="modal-overlay" id="exerciseModal">
-        <div class="modal modal-lg">
+        <div class="modal">
             <div class="modal-header">
-                <h3>我的运动记录</h3>
+                <h3>运动记录</h3>
                 <button class="modal-close" id="btnCloseExercise">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="exercise-form">
-                    <div class="exercise-form-row">
-                        <input type="text" id="exType" class="form-input" placeholder="运动类型（如：跑步、深蹲）" list="exTypeList" autocomplete="off">
+                <div class="exercise-form-grid">
+                    <div class="form-group">
+                        <label class="form-label">运动类型 <span class="required">*</span></label>
+                        <input type="text" id="exType" class="form-input" placeholder="如：跑步、深蹲、游泳" list="exTypeList" autocomplete="off">
                         <datalist id="exTypeList">
                             <option value="跑步">
                             <option value="力量训练">
@@ -668,27 +872,312 @@
                             <option value="跳绳">
                             <option value="HIIT">
                         </datalist>
-                        <input type="number" id="exDuration" class="form-input" placeholder="时长(分钟)" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">运动时长 <span class="required">*</span></label>
+                        <div class="input-with-unit">
+                            <input type="number" id="exDuration" class="form-input" placeholder="0" min="0">
+                            <span class="input-unit">分钟</span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">运动强度</label>
                         <select id="exIntensity" class="form-input">
                             <option value="高强度">高强度</option>
                             <option value="中等" selected>中等</option>
                             <option value="低强度">低强度</option>
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">记录日期</label>
                         <input type="date" id="exDate" class="form-input">
                     </div>
-                    <div class="exercise-form-row">
-                        <input type="text" id="exNotes" class="form-input" placeholder="备注（可选，如：做了4组每组12次、5公里用时25分钟）">
-                        <button class="btn btn-primary" id="btnSaveExercise">添加记录</button>
+                </div>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label class="form-label">备注</label>
+                    <textarea id="exNotes" class="form-input" placeholder="如：做了4组每组12次、5公里用时25分钟" rows="2"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCloseExerciseFooter">取消</button>
+                <button class="btn btn-primary" id="btnSaveExercise">保存记录</button>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- 版本历史弹窗 -->
+    <div class="modal-overlay" id="versionHistoryModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3>版本历史</h3>
+                <button class="modal-close" id="btnCloseVersionHistory">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="version-entry-info" id="versionEntryInfo">
+                    <span class="version-entry-title" id="versionEntryTitle"></span>
+                    <span class="version-entry-id" id="versionEntryId"></span>
+                </div>
+                <div class="version-list" id="versionList">
+                    <!-- 动态填充 -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCloseVersionHistoryFooter">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 问答历史详情弹窗 -->
+    <div class="modal-overlay" id="historyDetailModal">
+        <div class="modal modal-xl">
+            <div class="modal-header">
+                <h3>问答详情</h3>
+                <button class="modal-close" id="btnCloseHistoryDetail">&times;</button>
+            </div>
+            <div class="modal-body" id="historyDetailBody">
+                <div class="history-detail-question">
+                    <div class="hd-label">问题</div>
+                    <div class="hd-content" id="hdQuestion"></div>
+                </div>
+                <div class="history-detail-answer">
+                    <div class="hd-label">回答</div>
+                    <div class="hd-content" id="hdAnswer"></div>
+                </div>
+                <div class="history-detail-sources" id="hdSources" style="display:none;">
+                    <div class="hd-label">参考资料来源</div>
+                </div>
+                <div class="history-detail-meta" id="hdMeta"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCloseHistoryDetailFooter">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 训练计划编辑弹窗 -->
+    <div class="modal-overlay" id="trainingPlanEditModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="trainingPlanEditTitle">编辑训练计划</h3>
+                <button class="modal-close" id="btnCloseTrainingPlanEdit">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editPlanId" value="">
+                <div class="form-group">
+                    <label class="form-label">计划标题</label>
+                    <input type="text" id="editPlanTitle" class="form-input" placeholder="训练计划标题">
+                </div>
+                <div class="form-row" style="display:flex;gap:12px;">
+                    <div class="form-group" style="flex:1;">
+                        <label class="form-label">训练目标</label>
+                        <input type="text" id="editPlanGoal" class="form-input" placeholder="如：增肌、减脂">
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label class="form-label">经验水平</label>
+                        <select id="editPlanLevel" class="form-input">
+                            <option value="新手">新手</option>
+                            <option value="有经验">有经验</option>
+                            <option value="进阶">进阶</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label class="form-label">每周天数</label>
+                        <input type="number" id="editPlanDays" class="form-input" min="1" max="7" value="4">
                     </div>
                 </div>
-                <div class="exercise-list" id="exerciseList">
-                    <div class="history-empty"><p>暂无运动记录</p></div>
+                <div class="form-group">
+                    <label class="form-label">分类标签</label>
+                    <input type="text" id="editPlanCategory" class="form-input" placeholder="如：增肌、减脂（可选）">
                 </div>
+                <div class="form-group">
+                    <label class="form-label">计划内容</label>
+                    <textarea id="editPlanContent" class="form-textarea" rows="12" placeholder="输入训练计划详细内容..."></textarea>
+                </div>
+                <button class="btn btn-primary btn-block" id="btnSaveTrainingPlan">保存计划</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量编辑训练计划弹窗 -->
+    <div class="modal-overlay" id="trainingBatchEditModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>批量编辑训练计划</h3>
+                <button class="modal-close" id="btnCloseTrainingBatchEdit">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="form-hint" style="color:#888;margin-bottom:16px;">已选 <strong id="trainingBatchEditCount">0</strong> 条计划，留空的字段将不修改</p>
+                <div class="form-group">
+                    <label class="form-label">训练目标</label>
+                    <select id="batchEditGoal" class="form-input">
+                        <option value="">不修改</option>
+                        <option value="增肌">增肌</option>
+                        <option value="减脂">减脂</option>
+                        <option value="塑形">塑形</option>
+                        <option value="力量">力量</option>
+                        <option value="耐力">耐力</option>
+                        <option value="柔韧">柔韧</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">经验水平</label>
+                    <select id="batchEditLevel" class="form-input">
+                        <option value="">不修改</option>
+                        <option value="新手">新手</option>
+                        <option value="进阶">进阶</option>
+                        <option value="高级">高级</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">每周训练天数</label>
+                    <select id="batchEditDays" class="form-input">
+                        <option value="0">不修改</option>
+                        <option value="1">1天</option>
+                        <option value="2">2天</option>
+                        <option value="3">3天</option>
+                        <option value="4">4天</option>
+                        <option value="5">5天</option>
+                        <option value="6">6天</option>
+                        <option value="7">7天</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">分类标签</label>
+                    <input type="text" id="batchEditCategory" class="form-input" placeholder="留空不修改">
+                </div>
+                <button class="btn btn-primary btn-block" id="btnSaveTrainingBatchEdit">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量编辑运动记录弹窗 -->
+    <div class="modal-overlay" id="exerciseBatchEditModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>批量编辑运动记录</h3>
+                <button class="modal-close" id="btnCloseExerciseBatchEdit">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="form-hint" style="color:#888;margin-bottom:16px;">已选 <strong id="exerciseBatchEditCount">0</strong> 条记录，留空的字段将不修改</p>
+                <div class="form-group">
+                    <label class="form-label">运动类型</label>
+                    <select id="batchEditExerciseType" class="form-input">
+                        <option value="">不修改</option>
+                        <option value="跑步">跑步</option>
+                        <option value="游泳">游泳</option>
+                        <option value="骑行">骑行</option>
+                        <option value="力量训练">力量训练</option>
+                        <option value="瑜伽">瑜伽</option>
+                        <option value="跳绳">跳绳</option>
+                        <option value="篮球">篮球</option>
+                        <option value="足球">足球</option>
+                        <option value="羽毛球">羽毛球</option>
+                        <option value="HIIT">HIIT</option>
+                        <option value="其他">其他</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">强度</label>
+                    <select id="batchEditExerciseIntensity" class="form-input">
+                        <option value="">不修改</option>
+                        <option value="高强度">高强度</option>
+                        <option value="中等">中等</option>
+                        <option value="低强度">低强度</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">时长（分钟）</label>
+                    <input type="number" id="batchEditExerciseDuration" class="form-input" min="0" placeholder="留空不修改">
+                </div>
+                <button class="btn btn-primary btn-block" id="btnSaveExerciseBatchEdit">保存修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 运动记录详情弹窗 -->
+    <div class="modal-overlay" id="exerciseDetailModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3>运动记录详情</h3>
+                <button class="modal-close" id="btnCloseExerciseDetail">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ex-detail-card">
+                    <div class="ex-detail-row">
+                        <span class="ex-detail-label">运动类型</span>
+                        <span class="ex-detail-value" id="exDetailType"></span>
+                    </div>
+                    <div class="ex-detail-row">
+                        <span class="ex-detail-label">运动时长</span>
+                        <span class="ex-detail-value" id="exDetailDuration"></span>
+                    </div>
+                    <div class="ex-detail-row">
+                        <span class="ex-detail-label">运动强度</span>
+                        <span class="ex-detail-value" id="exDetailIntensity"></span>
+                    </div>
+                    <div class="ex-detail-row">
+                        <span class="ex-detail-label">记录日期</span>
+                        <span class="ex-detail-value" id="exDetailDate"></span>
+                    </div>
+                    <div class="ex-detail-row ex-detail-row-full">
+                        <span class="ex-detail-label">备注</span>
+                        <span class="ex-detail-value" id="exDetailNotes">无</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-outline btn-sm" id="btnEditFromExDetail">编辑</button>
+                <button class="btn btn-sm btn-danger" id="btnDeleteFromExDetail">删除</button>
+                <button class="btn btn-outline" id="btnCloseExerciseDetailFooter">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 训练计划详情弹窗 -->
+    <div class="modal-overlay" id="trainingPlanDetailModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="detailPlanTitle">训练计划详情</h3>
+                <button class="modal-close" id="btnCloseTrainingPlanDetail">&times;</button>
+            </div>
+            <div class="modal-body" id="trainingPlanDetailBody">
+                <div class="tp-detail-meta" id="tpDetailMeta"></div>
+                <div class="tp-detail-content" id="tpDetailContent"></div>
+            </div>
+            <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn btn-outline btn-sm" id="btnEditFromDetail">编辑</button>
+                <button class="btn btn-sm btn-danger" id="btnDeleteFromDetail">删除</button>
+                <button class="btn btn-outline" id="btnCloseTrainingPlanDetailFooter">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分类管理弹窗 -->
+    <div class="modal-overlay" id="categoryManageModal">
+        <div class="modal category-modal-lg">
+            <div class="modal-header">
+                <h3>分类管理</h3>
+                <button class="modal-close" id="btnCloseCategoryManage">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="setting-hint">管理一级分类（如增肌、减脂），系统将自动匹配对应的细分关键词</p>
+                <div class="category-manage-list" id="categoryManageList">
+                    <!-- 动态填充 -->
+                </div>
+                <div class="category-manage-add">
+                    <input type="text" id="newCategoryName" class="setting-input" placeholder="输入新分类名称">
+                    <button class="btn btn-sm btn-primary" id="btnAddCategory">添加</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="btnCloseCategoryManageFooter">关闭</button>
             </div>
         </div>
     </div>
 
     <script src="js/knowledge.js?v=11"></script>
-    <script src="js/app.js?v=32"></script>
+    <script src="js/app.js?v=38"></script>
+    <script src="js/enhancements.js?v=1"></script>
 </body>
 </html>

@@ -406,23 +406,23 @@ KNOWLEDGE_ITEMS = [
 ]
 
 
-def get_all_knowledge():
-    """获取全部知识条目（静态 + 动态）。"""
+def get_all_knowledge(user_id: int = None):
+    """获取全部知识条目（静态 + 当前用户的动态）。"""
     from database import get_dynamic_entries
     static = KNOWLEDGE_ITEMS
-    dynamic = get_dynamic_entries()
+    dynamic = get_dynamic_entries(user_id=user_id)
     return static + dynamic
 
 
 def get_categories():
-    """获取分类统计。"""
+    """获取分类统计（所有知识）。"""
     from collections import Counter
-    items = get_all_knowledge()
+    items = get_all_knowledge(user_id=None)  # 获取所有动态条目用于分类统计
     cats = Counter(item["category"] for item in items)
     return [{"category": k, "count": v} for k, v in cats.items()]
 
 
 def get_knowledge_texts():
-    """获取用于检索的文本列表（标题+内容拼接）。"""
-    items = get_all_knowledge()
+    """获取用于检索的文本列表（所有知识）。"""
+    items = get_all_knowledge(user_id=None)  # 获取所有动态条目用于检索
     return [f"{item['title']}\n{item['content']}" for item in items]

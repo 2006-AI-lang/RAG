@@ -7,6 +7,7 @@ FitQA - 运动健身知识问答系统后端入口。
 """
 
 import os
+import uuid
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -15,8 +16,11 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import time
+from collections import defaultdict
 
 from config import settings
 from database import init_db
@@ -32,11 +36,64 @@ from api.config import router as config_router
 from api.auth import router as auth_router
 from api.sessions import router as sessions_router
 from api.exercise import router as exercise_router
+from api.training_plan import router as training_plan_router
 
 logger = logging.getLogger("fitqa")
 
 LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
+
+
+# ==================== 速率限制中间件 ====================
+class RateLimitMiddleware:
+    """基于 IP 的速率限制中间件。"""
+
+    def __init__(self, app, default_limit: int = 100, window_seconds: int = 60):
+        self.app = app
+        self.default_limit = default_limit
+        self.window = window_seconds
+        self._requests: dict = defaultdict(list)
+        # 特定路由的限制 (path_prefix, limit)
+        self._route_limits = {
+            "/auth/register": 5,
+            "/auth/login": 10,
+            "/ask": 30,
+            "/ask/stream": 30,
+        }
+
+    def _get_client_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def _get_limit(self, path: str) -> int:
+        for prefix, limit in self._route_limits.items():
+            if path.startswith(prefix):
+                return limit
+        return self.default_limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        request = Request(scope, receive)
+        client_ip = self._get_client_ip(request)
+        path = request.url.path
+        limit = self._get_limit(path)
+        now = time.time()
+
+        key = f"{client_ip}:{path}"
+        self._requests[key] = [t for t in self._requests[key] if now - t < self.window]
+
+        if len(self._requests[key]) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "请求过于频繁，请稍后再试", "retry_after": self.window},
+            )
+
+        self._requests[key].append(now)
+        return await self.app(scope, receive, send)
 
 
 def setup_logging():
@@ -79,6 +136,15 @@ async def lifespan(app: FastAPI):
     # 1. 初始化数据库
     init_db()
     logger.info("[Startup] Database initialized.")
+
+    # 1.1 清理过期 Token
+    try:
+        from database import cleanup_expired_tokens
+        deleted = cleanup_expired_tokens()
+        if deleted:
+            logger.info(f"[Startup] Cleaned up {deleted} expired tokens.")
+    except Exception as e:
+        logger.warning(f"[Startup] Token cleanup failed: {e}")
 
     # 1.5 应用数据库中的激活模型配置（覆盖 .env，保证重启后生效）
     try:
@@ -137,7 +203,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS 跨域配置
+# CORS 跨域配置（必须最先添加，否则预检请求会失败）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -145,6 +211,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 添加速率限制中间件
+app.add_middleware(RateLimitMiddleware, default_limit=100, window_seconds=60)
 
 # 注册路由
 app.include_router(ask_router, tags=["问答"])
@@ -154,6 +223,17 @@ app.include_router(config_router, tags=["配置"])
 app.include_router(auth_router, tags=["用户"])
 app.include_router(sessions_router, tags=["会话"])
 app.include_router(exercise_router, tags=["运动记录"])
+app.include_router(training_plan_router, tags=["训练计划"])
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """为每个请求添加唯一 ID，便于追踪。"""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.get("/health", tags=["系统"])

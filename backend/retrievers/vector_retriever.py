@@ -8,11 +8,9 @@ import logging
 import numpy as np
 
 from data.knowledge_base import get_knowledge_texts
+from config import settings
 
 logger = logging.getLogger("fitqa.vector")
-
-# 向量相似度阈值：低于该值的片段视为"不相关"，过滤掉（用于"无法回答"提示）
-MIN_VECTOR_SCORE = 0.30
 
 
 class VectorRetriever:
@@ -108,7 +106,7 @@ class VectorRetriever:
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self.items):
                 continue
-            if float(score) < MIN_VECTOR_SCORE:
+            if float(score) < settings.RETRIEVAL_MIN_VECTOR_SCORE:
                 continue
             item = self.items[idx]
             content = item["content"]

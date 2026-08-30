@@ -30,6 +30,24 @@ class Settings(BaseSettings):
     # 加密密钥
     ENCRYPTION_KEY: str = ""
 
+    # 检索配置
+    RETRIEVAL_MIN_VECTOR_SCORE: float = 0.30
+    RETRIEVAL_BM25_MIN_SCORE: float = 0.01
+    RETRIEVAL_RRF_K: int = 60
+    RETRIEVAL_CANDIDATE_MULTIPLIER: int = 4
+    RETRIEVAL_CHUNK_OVERLAP: int = 100
+
+    # LLM 配置
+    LLM_TEMPERATURE: float = 0.3
+    LLM_MAX_TOKENS: int = 2048
+
+    # 缓存配置
+    ANSWER_CACHE_SIZE: int = 500
+    ANSWER_CACHE_TTL_SECONDS: int = 1800
+
+    # Token 过期配置
+    TOKEN_EXPIRE_DAYS: int = 7
+
     @property
     def is_mock_mode(self) -> bool:
         """是否进入 mock 模式：LLM_MODE=mock 或未配置 API Key。"""

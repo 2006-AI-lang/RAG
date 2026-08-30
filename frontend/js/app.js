@@ -5,10 +5,10 @@
 
 // ==================== API 配置 ====================
 // 使用相对路径，确保通过任何方式访问（localhost/127.0.0.1/LAN IP/ngrok）都能正常请求
-const API_BASE_URL = '';
+window.API_BASE_URL = '';
 
 // ==================== 全局状态 ====================
-const STATE = {
+var STATE = {
     currentTab: 'chat',
     sessions: [],
     currentSessionId: null,
@@ -22,13 +22,37 @@ const STATE = {
 
 const TOKEN_KEY = 'fitqa_token';
 
-function getToken() { return localStorage.getItem(TOKEN_KEY); }
-function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
-function isLoggedIn() { return !!STATE.currentUser; }
-function authHeaders(extra) {
+window.getToken = function getToken() { return localStorage.getItem(TOKEN_KEY); }
+window.setToken = function setToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
+window.isLoggedIn = function isLoggedIn() { return !!STATE.currentUser; }
+window.authHeaders = function authHeaders(extra) {
     const t = getToken();
     return t ? Object.assign({}, extra, { Authorization: `Bearer ${t}` }) : (extra || {});
-}
+};
+var getToken = window.getToken;
+var setToken = window.setToken;
+var isLoggedIn = window.isLoggedIn;
+var authHeaders = window.authHeaders;
+
+// 动态添加运动记录卡片样式
+(function addExerciseCardStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+        .exercise-panel .exercise-list { gap: 10px; }
+        .exercise-panel .exercise-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            border-bottom: none;
+            transition: all var(--transition);
+        }
+        .exercise-panel .exercise-item:hover {
+            border-color: var(--primary);
+            box-shadow: var(--shadow-sm);
+        }
+    `;
+    document.head.appendChild(style);
+})();
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
@@ -41,6 +65,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     initAuthUI();
     initUnansweredUI();
     initTrainingPlanUI();
+    initTrainingPlanTabUI();
+    initHistoryDetailUI();
     initExerciseUI();
     await checkBackendHealth();
     if (STATE.backendHealthy) {
@@ -64,10 +90,12 @@ async function checkBackendHealth() {
             STATE.backendHealthy = true;
             STATE.healthData = data;
             statusDot.className = 'status-dot online';
-            const activeModel = data.active_model;
-            statusText.textContent = data.mock_mode
-                ? '离线'
-                : (activeModel && activeModel.name ? activeModel.name : '大模型模式');
+            if (data.mock_mode) {
+                statusText.textContent = '离线模式';
+            } else {
+                const activeModel = data.active_model;
+                statusText.textContent = activeModel && activeModel.name ? activeModel.name : '大模型模式';
+            }
             console.log('[FitQA] Backend connected:', data);
             return;
         }
@@ -107,6 +135,8 @@ async function initAuth() {
     renderSessionList();
     renderMessages();
     initHistory();
+    loadTrainingPlans();
+    loadExerciseRecordsInTraining();
     await refreshUserStatus();
 }
 
@@ -114,13 +144,16 @@ function applyAuthState() {
     const btnLogin = document.getElementById('btnLogin');
     const userMenu = document.getElementById('userMenu');
     const userName = document.getElementById('userName');
+    const historyTab = document.querySelector('[data-tab="history"]');
     if (STATE.currentUser) {
         if (btnLogin) btnLogin.classList.add('hidden');
         if (userMenu) userMenu.classList.remove('hidden');
         if (userName) userName.textContent = STATE.currentUser.username;
+        if (historyTab) historyTab.style.display = '';
     } else {
         if (btnLogin) btnLogin.classList.remove('hidden');
         if (userMenu) userMenu.classList.add('hidden');
+        if (historyTab) historyTab.style.display = 'none';
     }
     // 若设置弹窗已打开，刷新其内容（全局/个人切换）
     const settingsModal = document.getElementById('settingsModal');
@@ -208,6 +241,8 @@ async function handleAuthSubmit() {
         renderSessionList();
         renderMessages();
         initHistory();
+        loadTrainingPlans();
+        loadExerciseRecordsInTraining();
         await refreshUserStatus();
     } catch (e) {
         showToast(`请求失败: ${e.message}`, 'error');
@@ -235,6 +270,8 @@ async function handleLogout() {
     renderSessionList();
     renderMessages();
     initHistory();
+    loadTrainingPlans();
+    loadExerciseRecordsInTraining();
     if (STATE.backendHealthy) checkBackendHealth();
     showToast('已退出登录', 'info');
 }
@@ -325,11 +362,13 @@ async function clearUnansweredQuestions() {
 // ==================== 训练计划生成 ====================
 function initTrainingPlanUI() {
     const btnOpen = document.getElementById('btnTrainingPlan');
+    const btnInline = document.getElementById('btnTrainingPlanInline');
     const btnClose = document.getElementById('btnCloseTrainingPlan');
     const btnGenerate = document.getElementById('btnGeneratePlan');
+    const btnManageGoal = document.getElementById('btnPlanGoalManage');
     const modal = document.getElementById('trainingPlanModal');
 
-    if (btnOpen) btnOpen.addEventListener('click', () => {
+    function openPlanModal() {
         if (!isLoggedIn()) {
             showToast('请先登录后再使用训练计划', 'error');
             openLoginModal();
@@ -339,6 +378,7 @@ function initTrainingPlanUI() {
             document.getElementById('planGoal').value = '';
             document.getElementById('planLevel').value = '新手';
             document.getElementById('planDays').value = '4';
+            document.getElementById('planRequirements').value = '';
             // 用知识库分类填充 datalist
             const dl = document.getElementById('planGoalList');
             if (dl) {
@@ -347,27 +387,772 @@ function initTrainingPlanUI() {
             }
             modal.classList.add('active');
         }
-    });
+    }
+
+    if (btnOpen) btnOpen.addEventListener('click', openPlanModal);
+    if (btnInline) btnInline.addEventListener('click', openPlanModal);
     if (btnClose) btnClose.addEventListener('click', () => modal && modal.classList.remove('active'));
     if (btnGenerate) btnGenerate.addEventListener('click', generateTrainingPlan);
+    if (btnManageGoal) btnManageGoal.addEventListener('click', () => {
+        // 打开知识库分类管理
+        if (modal) modal.classList.remove('active');
+        const catBtn = document.querySelector('[data-tab="knowledge"]');
+        if (catBtn) catBtn.click();
+        // 触发知识库的分类管理弹窗
+        setTimeout(() => {
+            const btnCat = document.getElementById('btnManageCategories');
+            if (btnCat) btnCat.click();
+        }, 300);
+    });
     if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
 }
 
 function generateTrainingPlan() {
-    const goal = document.getElementById('planGoal')?.value || '增肌';
+    const goal = document.getElementById('planGoal')?.value?.trim() || '';
     const level = document.getElementById('planLevel')?.value || '新手';
-    const days = document.getElementById('planDays')?.value || '4';
-    const question = `我是${level}，目标是${goal}，每周可以训练 ${days} 天。请根据知识库内容，为我制定一份一周训练计划，包含：每日训练部位、具体动作、每组次数与组数、组间休息和注意事项，并标注参考资料编号。`;
+    const days = document.getElementById('planDays')?.value || '';
+    const requirements = document.getElementById('planRequirements')?.value?.trim() || '';
+
+    if (!goal) { showToast('请填写训练目标', 'error'); return; }
+    if (!days) { showToast('请填写每周训练天数', 'error'); return; }
+
+    let question = `我是${level}，目标是${goal}，每周可以训练 ${days} 天。请根据知识库内容，为我制定一份一周训练计划，包含：每日训练部位、具体动作、每组次数与组数、组间休息和注意事项，并标注参考资料编号。`;
+    if (requirements) {
+        question += `\n额外要求：${requirements}`;
+    }
 
     const modal = document.getElementById('trainingPlanModal');
     if (modal) modal.classList.remove('active');
 
+    // 先切到聊天标签
+    const chatBtn = document.querySelector('[data-tab="chat"]');
+    if (chatBtn) chatBtn.click();
+
+    // 在聊天中发送消息，完成后自动保存到训练计划库
+    window._pendingPlanSave = { goal, level, days };
     const input = document.getElementById('chatInput');
     if (input) input.value = question;
-    handleSendMessage();
+    window.handleSendMessage();
+}
+
+async function autoSaveTrainingPlan(question, answer, planInfo) {
+    try {
+        const title = question;
+        // 提取分类：从目标中推断
+        const category = planInfo.goal || '通用';
+        const res = await fetch('/training-plans', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({
+                title: title,
+                goal: planInfo.goal,
+                level: planInfo.level,
+                days_per_week: parseInt(planInfo.days) || 4,
+                content: answer,
+                category: category,
+            }),
+        });
+        if (res.ok) {
+            showToast('训练计划已自动保存', 'success');
+            // 刷新训练计划列表
+            loadTrainingPlans();
+        } else {
+            const err = await res.text();
+            console.warn('自动保存训练计划失败:', err);
+        }
+    } catch (e) {
+        console.warn('自动保存训练计划异常:', e);
+    }
+}
+window.autoSaveTrainingPlan = autoSaveTrainingPlan;
+
+// ==================== 训练计划板块 ====================
+let currentTrainingSubtab = 'plans';
+
+function initTrainingPlanTabUI() {
+    loadTrainingPlans();
+
+    // 子标签切换
+    document.querySelectorAll('.training-subtab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.training-subtab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentTrainingSubtab = btn.dataset.subtab;
+            exitTrainingBatchMode();
+            const plansToolbar = document.getElementById('trainingPlansToolbar');
+            const exercisesToolbar = document.getElementById('trainingExercisesToolbar');
+            const trainingList = document.getElementById('trainingList');
+            const exerciseList = document.getElementById('exerciseList');
+            const exportWrapper = document.querySelector('.training-actions .export-wrapper');
+            if (currentTrainingSubtab === 'plans') {
+                trainingList.classList.remove('hidden');
+                exerciseList.classList.add('hidden');
+                plansToolbar.classList.remove('hidden');
+                exercisesToolbar.classList.add('hidden');
+                if (exportWrapper) exportWrapper.style.display = '';
+                loadTrainingPlans();
+            } else {
+                trainingList.classList.add('hidden');
+                exerciseList.classList.remove('hidden');
+                plansToolbar.classList.add('hidden');
+                exercisesToolbar.classList.remove('hidden');
+                loadExerciseRecordsInTraining();
+            }
+        });
+    });
+
+    // 新增按钮
+    document.getElementById('btnTrainingAdd')?.addEventListener('click', () => {
+        if (!isLoggedIn()) {
+            showToast('请先登录后使用', 'error');
+            openLoginModal();
+            return;
+        }
+        if (currentTrainingSubtab === 'plans') {
+            openTrainingPlanEdit(null);
+        } else {
+            openExerciseModal();
+        }
+    });
+
+    // 批量操作按钮
+    document.getElementById('btnTrainingBatchOp')?.addEventListener('click', () => {
+        if (!isLoggedIn()) {
+            showToast('请先登录后使用', 'error');
+            return;
+        }
+        document.body.classList.add('training-batch-mode');
+        document.getElementById('trainingBatchBar').classList.remove('hidden');
+        updateTrainingBatchCount();
+    });
+
+    // 取消批量操作
+    document.getElementById('btnCancelTrainingBatch')?.addEventListener('click', exitTrainingBatchMode);
+
+    // 全选
+    document.getElementById('trainingCheckAll')?.addEventListener('change', (e) => {
+        const checked = e.target.checked;
+        const selector = currentTrainingSubtab === 'plans'
+            ? '#trainingList .training-item-check input'
+            : '#exerciseList .exercise-card-check input';
+        document.querySelectorAll(selector).forEach(cb => cb.checked = checked);
+        updateTrainingBatchCount();
+    });
+
+    // 批量删除
+    document.getElementById('btnConfirmBatchDeleteTraining')?.addEventListener('click', async () => {
+        const ids = getTrainingBatchSelectedIds();
+        if (ids.length === 0) {
+            showToast('请先选择要删除的记录', 'warning');
+            return;
+        }
+        if (!confirm(`确定删除选中的 ${ids.length} 条记录？`)) return;
+        try {
+            const url = currentTrainingSubtab === 'plans'
+                ? '/training-plans/batch-delete'
+                : '/exercise/records/batch-delete';
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify({ ids }),
+            });
+            if (!res.ok) throw new Error(await res.text());
+            showToast(`已删除 ${ids.length} 条记录`, 'success');
+            exitTrainingBatchMode();
+            if (currentTrainingSubtab === 'plans') loadTrainingPlans(); else loadExerciseRecordsInTraining();
+        } catch (e) {
+            showToast('删除失败: ' + e.message, 'error');
+        }
+    });
+
+    // 批量编辑
+    document.getElementById('btnBatchEditTraining')?.addEventListener('click', () => {
+        const ids = getTrainingBatchSelectedIds();
+        if (ids.length === 0) {
+            showToast('请先选择要编辑的记录', 'warning');
+            return;
+        }
+        if (currentTrainingSubtab === 'plans') {
+            document.getElementById('trainingBatchEditCount').textContent = ids.length;
+            document.getElementById('trainingBatchEditModal').classList.add('active');
+        } else {
+            document.getElementById('exerciseBatchEditCount').textContent = ids.length;
+            document.getElementById('exerciseBatchEditModal').classList.add('active');
+        }
+    });
+
+    // 训练计划搜索
+    let trainingSearchTimer;
+    document.getElementById('trainingSearch')?.addEventListener('input', () => {
+        clearTimeout(trainingSearchTimer);
+        trainingSearchTimer = setTimeout(loadTrainingPlans, 300);
+    });
+
+    // 训练计划筛选
+    document.getElementById('trainingGoalFilter')?.addEventListener('change', loadTrainingPlans);
+    document.getElementById('trainingLevelFilter')?.addEventListener('change', loadTrainingPlans);
+    document.getElementById('trainingDaysFilter')?.addEventListener('change', loadTrainingPlans);
+    document.getElementById('trainingDateFrom')?.addEventListener('change', loadTrainingPlans);
+    document.getElementById('trainingDateTo')?.addEventListener('change', loadTrainingPlans);
+
+    // 运动记录搜索
+    let exerciseSearchTimer;
+    document.getElementById('exerciseSearch')?.addEventListener('input', () => {
+        clearTimeout(exerciseSearchTimer);
+        exerciseSearchTimer = setTimeout(loadExerciseRecordsInTraining, 300);
+    });
+
+    // 运动记录筛选
+    document.getElementById('exerciseTypeFilter')?.addEventListener('change', loadExerciseRecordsInTraining);
+    document.getElementById('exerciseDurationFilter')?.addEventListener('change', loadExerciseRecordsInTraining);
+    document.getElementById('exerciseIntensityFilter')?.addEventListener('change', loadExerciseRecordsInTraining);
+    document.getElementById('exerciseDateFrom')?.addEventListener('change', loadExerciseRecordsInTraining);
+    document.getElementById('exerciseDateTo')?.addEventListener('change', loadExerciseRecordsInTraining);
+
+    // 导出（训练计划/运动记录共用）
+    document.getElementById('btnExportTrainingPlan')?.addEventListener('click', () => {
+        document.getElementById('trainingExportDropdown').classList.toggle('hidden');
+    });
+    document.querySelectorAll('#trainingExportDropdown .export-option').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            document.getElementById('trainingExportDropdown').classList.add('hidden');
+            if (currentTrainingSubtab === 'plans') {
+                await exportTrainingPlans(btn.dataset.format);
+            } else {
+                await exportExerciseRecords(btn.dataset.format);
+            }
+        });
+    });
+
+    document.addEventListener('click', (e) => {
+        const wrapper = document.querySelector('.training-actions .export-wrapper');
+        if (wrapper && !wrapper.contains(e.target)) {
+            document.getElementById('trainingExportDropdown')?.classList.add('hidden');
+        }
+    });
+
+    // 训练计划编辑弹窗 - 保存
+    document.getElementById('btnSaveTrainingPlan')?.addEventListener('click', saveTrainingPlanEdit);
+
+    // 训练计划编辑弹窗 - 关闭
+    document.getElementById('btnCloseTrainingPlanEdit')?.addEventListener('click', () => {
+        document.getElementById('trainingPlanEditModal').classList.remove('active');
+    });
+    document.getElementById('trainingPlanEditModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('trainingPlanEditModal')) {
+            document.getElementById('trainingPlanEditModal').classList.remove('active');
+        }
+    });
+
+    // 训练计划详情弹窗 - 关闭
+    document.getElementById('btnCloseTrainingPlanDetail')?.addEventListener('click', () => {
+        document.getElementById('trainingPlanDetailModal').classList.remove('active');
+    });
+    document.getElementById('btnCloseTrainingPlanDetailFooter')?.addEventListener('click', () => {
+        document.getElementById('trainingPlanDetailModal').classList.remove('active');
+    });
+    document.getElementById('trainingPlanDetailModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('trainingPlanDetailModal')) {
+            document.getElementById('trainingPlanDetailModal').classList.remove('active');
+        }
+    });
+
+    // 训练计划详情弹窗 - 编辑
+    document.getElementById('btnEditFromDetail')?.addEventListener('click', () => {
+        const modal = document.getElementById('trainingPlanDetailModal');
+        const id = parseInt(modal?.dataset.planId);
+        if (id) {
+            modal?.classList.remove('active');
+            openTrainingPlanEdit(id);
+        }
+    });
+
+    // 训练计划详情弹窗 - 删除
+    document.getElementById('btnDeleteFromDetail')?.addEventListener('click', async () => {
+        const modal = document.getElementById('trainingPlanDetailModal');
+        const id = parseInt(modal?.dataset.planId);
+        if (!id || !confirm('确定删除该训练计划？')) return;
+        try {
+            const res = await fetch('/training-plans/' + id, {
+                method: 'DELETE',
+                headers: authHeaders(),
+            });
+            if (!res.ok) throw new Error(await res.text());
+            modal?.classList.remove('active');
+            showToast('删除成功', 'success');
+            loadTrainingPlans();
+        } catch (e) {
+            showToast('删除失败: ' + e.message, 'error');
+        }
+    });
+
+    // 批量编辑训练计划
+    document.getElementById('btnCloseTrainingBatchEdit')?.addEventListener('click', () => {
+        document.getElementById('trainingBatchEditModal').classList.remove('active');
+    });
+    document.getElementById('trainingBatchEditModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('trainingBatchEditModal')) {
+            document.getElementById('trainingBatchEditModal').classList.remove('active');
+        }
+    });
+    document.getElementById('btnSaveTrainingBatchEdit')?.addEventListener('click', saveTrainingBatchEdit);
+
+    // 批量编辑运动记录
+    document.getElementById('btnCloseExerciseBatchEdit')?.addEventListener('click', () => {
+        document.getElementById('exerciseBatchEditModal').classList.remove('active');
+    });
+    document.getElementById('exerciseBatchEditModal')?.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('exerciseBatchEditModal')) {
+            document.getElementById('exerciseBatchEditModal').classList.remove('active');
+        }
+    });
+    document.getElementById('btnSaveExerciseBatchEdit')?.addEventListener('click', saveExerciseBatchEdit);
+}
+
+function getTrainingBatchSelectedIds() {
+    const selector = currentTrainingSubtab === 'plans'
+        ? '#trainingList .training-item-check input:checked'
+        : '#exerciseList .exercise-card-check input:checked';
+    return [...document.querySelectorAll(selector)].map(cb => parseInt(cb.value)).filter(n => !isNaN(n));
+}
+
+function exitTrainingBatchMode() {
+    document.body.classList.remove('training-batch-mode');
+    document.getElementById('trainingBatchBar').classList.add('hidden');
+    document.getElementById('trainingCheckAll').checked = false;
+    document.querySelectorAll('#trainingList .training-item-check input, #exerciseList .exercise-card-check input').forEach(cb => cb.checked = false);
+    updateTrainingBatchCount();
+}
+
+async function updateTrainingGoalFilter() {
+    try {
+        const data = await fetch('/training-plans?limit=500', { headers: authHeaders() }).then(r => r.json());
+        const goalFilter = document.getElementById('trainingGoalFilter');
+        if (!goalFilter || !data || !Array.isArray(data)) return;
+        const currentVal = goalFilter.value;
+        const goals = [...new Set(data.map(p => p.goal).filter(Boolean))].sort();
+        goalFilter.innerHTML = '<option value="">训练目标</option>' +
+            goals.map(g => `<option value="${escapeHtml(g)}"${g === currentVal ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+    } catch (e) { /* 忽略 */ }
+}
+
+function loadTrainingPlans() {
+    const list = document.getElementById('trainingList');
+    if (!list) return;
+    if (!isLoggedIn()) {
+        list.innerHTML = '<div class="training-empty"><p>请先登录后查看训练计划</p></div>';
+        return;
+    }
+
+    // 动态更新训练目标筛选选项
+    updateTrainingGoalFilter();
+
+    const keyword = document.getElementById('trainingSearch')?.value || '';
+    const goal = document.getElementById('trainingGoalFilter')?.value || '';
+    const level = document.getElementById('trainingLevelFilter')?.value || '';
+    const days = document.getElementById('trainingDaysFilter')?.value || '';
+    const dateFrom = document.getElementById('trainingDateFrom')?.value || '';
+    const dateTo = document.getElementById('trainingDateTo')?.value || '';
+
+    let url = '/training-plans?limit=100';
+    if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+    if (goal) url += '&goal=' + encodeURIComponent(goal);
+    if (level) url += '&level=' + encodeURIComponent(level);
+    if (days) url += '&days_per_week=' + encodeURIComponent(days);
+    if (dateFrom) url += '&date_from=' + encodeURIComponent(dateFrom);
+    if (dateTo) url += '&date_to=' + encodeURIComponent(dateTo);
+
+    fetch(url, { headers: authHeaders() })
+        .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(data => {
+            if (!Array.isArray(data)) {
+                throw new Error('服务器返回了意外的数据格式');
+            }
+            if (data.length === 0) {
+                list.innerHTML = '<div class="training-empty"><svg width="48" height="48" viewBox="0 0 48 48" fill="none"><rect x="14" y="6" width="20" height="36" rx="4" stroke="#999" stroke-width="2"/><line x1="14" y1="14" x2="34" y2="14" stroke="#999" stroke-width="2"/><line x1="18" y1="22" x2="30" y2="22" stroke="#999" stroke-width="1.5"/><line x1="18" y1="28" x2="30" y2="28" stroke="#999" stroke-width="1.5"/><line x1="18" y1="34" x2="26" y2="34" stroke="#999" stroke-width="1.5"/></svg><p>暂无训练计划，点击"新增"按钮或前往智能问答界面生成训练计划</p></div>';
+                return;
+            }
+
+            list.innerHTML = data.map(function(p) {
+                const preview = (p.content || p.goal || '').substring(0, 200);
+                const time = formatDateTime(p.created_at) || '';
+                return '<div class="training-item" data-id="' + p.id + '">' +
+                    '<div class="training-item-check"><input type="checkbox" value="' + p.id + '"></div>' +
+                    '<div class="training-item-body">' +
+                    '<div class="ti-title">' + escapeHtml(p.title || '训练计划 #' + p.id) + '</div>' +
+                    '<div class="ti-meta">' +
+                    (p.category ? '<span>📁 ' + escapeHtml(p.category) + '</span>' : '') +
+                    (p.level ? '<span>📊 ' + escapeHtml(p.level) + '</span>' : '') +
+                    (p.goal ? '<span>🎯 ' + escapeHtml(p.goal) + '</span>' : '') +
+                    (p.days_per_week ? '<span>📅 每周 ' + p.days_per_week + ' 天</span>' : '') +
+                    '<span>🕐 ' + time + '</span>' +
+                    '</div>' +
+                    (preview ? '<div class="ti-preview">' + escapeHtml(preview) + '</div>' : '') +
+                    '</div>' +
+                    '<div class="ti-actions">' +
+                    '<button class="btn btn-ghost btn-xs ti-edit" title="编辑" data-id="' + p.id + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+                    '<button class="btn btn-ghost btn-xs ti-delete" title="删除" data-id="' + p.id + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
+                    '</div>' +
+                    '</div>';
+            }).join('');
+
+            list.querySelectorAll('.training-item').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    if (e.target.closest('.training-item-check') || e.target.closest('.ti-actions')) return;
+                    if (document.body.classList.contains('training-batch-mode')) return;
+                    const id = parseInt(el.dataset.id);
+                    showTrainingPlanDetail(id);
+                });
+            });
+
+            list.querySelectorAll('.ti-edit').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const id = parseInt(btn.dataset.id);
+                    openTrainingPlanEdit(id);
+                });
+            });
+
+            list.querySelectorAll('.ti-delete').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const id = parseInt(btn.dataset.id);
+                    if (!confirm('确定删除该训练计划？')) return;
+                    try {
+                        const res = await fetch('/training-plans/' + id, {
+                            method: 'DELETE',
+                            headers: authHeaders(),
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        showToast('删除成功', 'success');
+                        loadTrainingPlans();
+                    } catch (e) {
+                        showToast('删除失败: ' + e.message, 'error');
+                    }
+                });
+            });
+
+            list.querySelectorAll('.training-item-check input').forEach(cb => {
+                cb.addEventListener('change', updateTrainingBatchCount);
+            });
+        })
+        .catch(e => {
+            list.innerHTML = '<div class="training-empty"><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
+        });
+}
+
+function updateTrainingBatchCount() {
+    const ids = getTrainingBatchSelectedIds();
+    document.getElementById('trainingBatchCount').textContent = '已选 ' + ids.length + ' 项';
+}
+
+function showTrainingPlanDetail(id) {
+    fetch('/training-plans/' + id, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(p => {
+            document.getElementById('detailPlanTitle').textContent = p.title || '训练计划详情';
+            document.getElementById('tpDetailMeta').innerHTML =
+                (p.category ? '<span>📁 ' + escapeHtml(p.category) + '</span>' : '') +
+                (p.level ? '<span>📊 ' + escapeHtml(p.level) + '</span>' : '') +
+                (p.goal ? '<span>🎯 ' + escapeHtml(p.goal) + '</span>' : '') +
+                (p.days_per_week ? '<span>📅 每周 ' + p.days_per_week + ' 天</span>' : '') +
+                '<span>🕐 ' + formatDateTime(p.created_at) + '</span>' +
+                (p.updated_at !== p.created_at ? '<span>✏️ 更新于 ' + formatDateTime(p.updated_at) + '</span>' : '');
+            document.getElementById('tpDetailContent').textContent = p.content || p.goal || '暂无内容';
+            document.getElementById('trainingPlanDetailModal').dataset.planId = p.id;
+            document.getElementById('trainingPlanDetailModal').classList.add('active');
+        })
+        .catch(e => showToast('加载详情失败: ' + e.message, 'error'));
+}
+
+function openTrainingPlanEdit(id) {
+    if (id) {
+        fetch('/training-plans/' + id, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(p => {
+                document.getElementById('editPlanId').value = p.id;
+                document.getElementById('editPlanTitle').value = p.title || '';
+                document.getElementById('editPlanGoal').value = p.goal || '';
+                document.getElementById('editPlanLevel').value = p.level || '新手';
+                document.getElementById('editPlanDays').value = p.days_per_week || 4;
+                document.getElementById('editPlanCategory').value = p.category || '';
+                document.getElementById('editPlanContent').value = p.content || '';
+                document.getElementById('trainingPlanEditTitle').textContent = '编辑训练计划';
+                document.getElementById('trainingPlanEditModal').classList.add('active');
+            })
+            .catch(e => showToast('加载失败: ' + e.message, 'error'));
+    } else {
+        document.getElementById('editPlanId').value = '';
+        document.getElementById('editPlanTitle').value = '';
+        document.getElementById('editPlanGoal').value = '';
+        document.getElementById('editPlanLevel').value = '新手';
+        document.getElementById('editPlanDays').value = '4';
+        document.getElementById('editPlanCategory').value = '';
+        document.getElementById('editPlanContent').value = '';
+        document.getElementById('trainingPlanEditTitle').textContent = '新增训练计划';
+        document.getElementById('trainingPlanEditModal').classList.add('active');
+    }
+}
+
+async function saveTrainingPlanEdit() {
+    const id = document.getElementById('editPlanId')?.value;
+    const title = document.getElementById('editPlanTitle')?.value?.trim() || '';
+    const goal = document.getElementById('editPlanGoal')?.value?.trim() || '';
+    const level = document.getElementById('editPlanLevel')?.value || '新手';
+    const days = parseInt(document.getElementById('editPlanDays')?.value) || 0;
+    const category = document.getElementById('editPlanCategory')?.value || '';
+    const content = document.getElementById('editPlanContent')?.value?.trim() || '';
+
+    if (!title) { showToast('请填写计划标题', 'error'); return; }
+    if (!goal) { showToast('请填写训练目标', 'error'); return; }
+    if (!days) { showToast('请填写每周训练天数', 'error'); return; }
+    if (!content) { showToast('请填写计划内容', 'error'); return; }
+
+    try {
+        const url = id ? '/training-plans/' + id : '/training-plans';
+        const method = id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+            method: method,
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ title, goal, level, days_per_week: days, content, category }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast(id ? '训练计划已更新' : '训练计划已创建', 'success');
+        document.getElementById('trainingPlanEditModal')?.classList.remove('active');
+        loadTrainingPlans();
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function saveTrainingBatchEdit() {
+    const ids = getTrainingBatchSelectedIds();
+    if (ids.length === 0) return;
+    const goal = document.getElementById('batchEditGoal')?.value || '';
+    const level = document.getElementById('batchEditLevel')?.value || '';
+    const days = parseInt(document.getElementById('batchEditDays')?.value) || 0;
+    const category = document.getElementById('batchEditCategory')?.value || '';
+
+    if (!goal && !level && !days && !category) {
+        showToast('请至少选择一项要修改的字段', 'warning');
+        return;
+    }
+
+    try {
+        const res = await fetch('/training-plans/batch-update', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ ids, goal, level, days_per_week: days, category }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        showToast(data.message || '批量更新成功', 'success');
+        document.getElementById('trainingBatchEditModal').classList.remove('active');
+        exitTrainingBatchMode();
+        loadTrainingPlans();
+    } catch (e) {
+        showToast('批量更新失败: ' + e.message, 'error');
+    }
+}
+
+async function saveExerciseBatchEdit() {
+    const ids = getTrainingBatchSelectedIds();
+    if (ids.length === 0) return;
+    const exerciseType = document.getElementById('batchEditExerciseType')?.value || '';
+    const intensity = document.getElementById('batchEditExerciseIntensity')?.value || '';
+    const duration = parseInt(document.getElementById('batchEditExerciseDuration')?.value) || 0;
+
+    if (!exerciseType && !intensity && !duration) {
+        showToast('请至少选择一项要修改的字段', 'warning');
+        return;
+    }
+
+    try {
+        let updated = 0;
+        for (const id of ids) {
+            const body = {};
+            if (exerciseType) body.exercise_type = exerciseType;
+            if (intensity) body.intensity = intensity;
+            if (duration) body.duration = duration;
+            const res = await fetch('/exercise/records/' + id, {
+                method: 'PUT',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify(body),
+            });
+            if (res.ok) updated++;
+        }
+        showToast(`已更新 ${updated} 条记录`, 'success');
+        document.getElementById('exerciseBatchEditModal').classList.remove('active');
+        exitTrainingBatchMode();
+        loadExerciseRecordsInTraining();
+    } catch (e) {
+        showToast('批量更新失败: ' + e.message, 'error');
+    }
+}
+
+async function exportTrainingPlans(format) {
+    if (!isLoggedIn()) {
+        showToast('请先登录后导出', 'error');
+        return;
+    }
+    try {
+        const res = await fetch('/training-plans/export?format=' + format, {
+            headers: authHeaders(),
+        });
+        if (!res.ok) {
+            if (format === 'pdf' || format === 'docx') {
+                showToast('PDF/Word 格式暂不支持，已导出为文本格式', 'info');
+                const txtRes = await fetch('/training-plans/export?format=txt', { headers: authHeaders() });
+                if (!txtRes.ok) throw new Error(await txtRes.text());
+                const blob = await txtRes.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'training-plans.txt';
+                a.click();
+                URL.revokeObjectURL(url);
+                return;
+            }
+            throw new Error(await res.text());
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'training-plans.' + (format === 'docx' ? 'docx' : format);
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('导出成功', 'success');
+    } catch (e) {
+        showToast('导出失败: ' + e.message, 'error');
+    }
+}
+
+async function exportExerciseRecords(format) {
+    if (!isLoggedIn()) {
+        showToast('请先登录后导出', 'error');
+        return;
+    }
+    try {
+        const data = await apiGet('/exercise/records?limit=500');
+        if (!data || data.length === 0) {
+            showToast('暂无运动记录可导出', 'info');
+            return;
+        }
+        let content, filename, type;
+        if (format === 'json') {
+            content = JSON.stringify(data, null, 2);
+            filename = 'exercise-records.json';
+            type = 'application/json';
+        } else if (format === 'csv') {
+            const header = '运动类型,时长(分钟),强度,日期,备注';
+            const rows = data.map(r => `"${r.exercise_type}","${r.duration}","${r.intensity}","${r.record_date}","${(r.notes || '').replace(/"/g, '""')}"`);
+            content = '\uFEFF' + header + '\n' + rows.join('\n');
+            filename = 'exercise-records.csv';
+            type = 'text/csv;charset=utf-8';
+        } else if (format === 'markdown') {
+            const lines = data.map(r => `- **${r.record_date}** | ${r.exercise_type} | ${r.duration}分钟 | ${r.intensity}${r.notes ? ' | ' + r.notes : ''}`);
+            content = '# 运动记录\n\n' + lines.join('\n');
+            filename = 'exercise-records.md';
+            type = 'text/markdown';
+        } else if (format === 'pdf' || format === 'docx') {
+            const textLines = data.map(r => `${r.record_date}  |  ${r.exercise_type}  |  ${r.duration}分钟  |  ${r.intensity}${r.notes ? '  |  ' + r.notes : ''}`);
+            const textContent = '运动记录\n\n' + textLines.join('\n');
+            content = textContent;
+            filename = 'exercise-records.txt';
+            type = 'text/plain';
+            showToast('已导出为文本格式（PDF/Word 需后端支持）', 'info');
+        } else {
+            const lines = data.map(r => `${r.record_date} | ${r.exercise_type} | ${r.duration}分钟 | ${r.intensity}${r.notes ? ' | ' + r.notes : ''}`);
+            content = lines.join('\n');
+            filename = 'exercise-records.txt';
+            type = 'text/plain';
+        }
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('导出成功', 'success');
+    } catch (e) {
+        showToast('导出失败: ' + e.message, 'error');
+    }
+}
+
+// ==================== 问答历史详情 ====================
+function initHistoryDetailUI() {
+    const modal = document.getElementById('historyDetailModal');
+    if (!modal) return;
+
+    document.getElementById('btnCloseHistoryDetail')?.addEventListener('click', () => modal.classList.remove('active'));
+    document.getElementById('btnCloseHistoryDetailFooter')?.addEventListener('click', () => modal.classList.remove('active'));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
+}
+
+function showHistoryDetail(question, answer, meta, sources) {
+    const modal = document.getElementById('historyDetailModal');
+    if (!modal) return;
+    document.getElementById('hdQuestion').textContent = question || '';
+    document.getElementById('hdAnswer').innerHTML = formatMessage(answer || '');
+    document.getElementById('hdMeta').textContent = meta || '';
+
+    const sourcesContainer = document.getElementById('hdSources');
+    if (sourcesContainer) {
+        if (sources && sources.length > 0) {
+            sourcesContainer.innerHTML = sources.map((s, i) => {
+                const title = s.title || '未知来源';
+                const category = s.category ? `<span class="hd-source-category">${escapeHtml(s.category)}</span>` : '';
+                const score = s.score ? `<span class="hd-source-score">相关度: ${(s.score * 100).toFixed(0)}%</span>` : '';
+                const snippet = s.snippet ? `<div class="hd-source-snippet">${escapeHtml(s.snippet).substring(0, 150)}${s.snippet.length > 150 ? '...' : ''}</div>` : '';
+                return `<div class="hd-source-item">
+                    <span class="hd-source-index">[${i + 1}]</span>
+                    <span class="hd-source-title">${escapeHtml(title)}</span>
+                    ${category}${score}
+                    ${snippet}
+                </div>`;
+            }).join('');
+            sourcesContainer.style.display = 'block';
+        } else {
+            sourcesContainer.innerHTML = '<div class="hd-source-empty">无参考资料来源</div>';
+            sourcesContainer.style.display = 'block';
+        }
+    }
+
+    modal.classList.add('active');
 }
 
 // ==================== 运动记录 ====================
+async function updateExerciseTypeFilter() {
+    try {
+        const data = await apiGet('/exercise/records?limit=500');
+        const typeFilter = document.getElementById('exerciseTypeFilter');
+        if (!typeFilter || !data) return;
+        const currentVal = typeFilter.value;
+        const types = [...new Set(data.map(r => r.exercise_type).filter(Boolean))].sort();
+        typeFilter.innerHTML = '<option value="">运动类型</option>' +
+            types.map(t => `<option value="${escapeHtml(t)}"${t === currentVal ? ' selected' : ''}>${escapeHtml(t)}</option>`).join('');
+    } catch (e) { /* 忽略 */ }
+}
+
+function openExerciseModal() {
+    const modal = document.getElementById('exerciseModal');
+    if (modal) {
+        delete modal.dataset.editId;
+        document.getElementById('exType').value = '';
+        document.getElementById('exDuration').value = '';
+        document.getElementById('exIntensity').value = '中等';
+        document.getElementById('exDate').value = new Date().toISOString().slice(0, 10);
+        document.getElementById('exNotes').value = '';
+        document.getElementById('btnSaveExercise').textContent = '保存记录';
+        modal.classList.add('active');
+    }
+}
+
 function initExerciseUI() {
     const btnOpen = document.getElementById('btnExerciseRecord');
     const btnClose = document.getElementById('btnCloseExercise');
@@ -381,42 +1166,37 @@ function initExerciseUI() {
             return;
         }
         if (modal) {
+            delete modal.dataset.editId;
+            document.getElementById('exType').value = '';
+            document.getElementById('exDuration').value = '';
+            document.getElementById('exIntensity').value = '中等';
             document.getElementById('exDate').value = new Date().toISOString().slice(0, 10);
+            document.getElementById('exNotes').value = '';
+            document.getElementById('btnSaveExercise').textContent = '保存记录';
             modal.classList.add('active');
-            loadExerciseRecords();
         }
     });
-    if (btnClose) btnClose.addEventListener('click', () => modal && modal.classList.remove('active'));
-    if (btnSave) btnSave.addEventListener('click', addExerciseRecord);
-    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('active'); });
-}
-
-async function loadExerciseRecords() {
-    const list = document.getElementById('exerciseList');
-    try {
-        const data = await apiGet('/exercise/records');
-        if (!data || data.length === 0) {
-            list.innerHTML = '<div class="history-empty"><p>暂无运动记录，试试添加一条？</p></div>';
-            return;
+    if (btnClose) btnClose.addEventListener('click', () => {
+        if (modal) {
+            delete modal.dataset.editId;
+            modal.classList.remove('active');
         }
-        list.innerHTML = data.map(r => `
-            <div class="exercise-item">
-                <div class="exercise-info">
-                    <strong>${escapeHtml(r.exercise_type)}</strong>
-                    <span>${r.duration}分钟</span>
-                    <span class="exercise-intensity">${escapeHtml(r.intensity)}</span>
-                    <span class="exercise-date">${escapeHtml(r.record_date)}</span>
-                </div>
-                ${r.notes ? `<div class="exercise-notes">${escapeHtml(r.notes)}</div>` : ''}
-                <button class="btn-delete-record" data-id="${r.id}" title="删除">删除</button>
-            </div>
-        `).join('');
-        list.querySelectorAll('.btn-delete-record').forEach(btn => {
-            btn.addEventListener('click', () => deleteExerciseRecord(btn.dataset.id));
-        });
-    } catch (e) {
-        list.innerHTML = '<div class="history-empty"><p>加载失败</p></div>';
-    }
+    });
+    const btnCloseFooter = document.getElementById('btnCloseExerciseFooter');
+    if (btnCloseFooter) btnCloseFooter.addEventListener('click', () => {
+        if (modal) {
+            delete modal.dataset.editId;
+            modal.classList.remove('active');
+        }
+    });
+    if (btnSave) btnSave.addEventListener('click', addExerciseRecord);
+    if (modal) modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            delete modal.dataset.editId;
+            modal.classList.remove('active');
+        }
+    });
+    initExerciseDetailUI();
 }
 
 async function addExerciseRecord() {
@@ -425,21 +1205,44 @@ async function addExerciseRecord() {
     const intensity = document.getElementById('exIntensity').value;
     const date = document.getElementById('exDate').value;
     const notes = document.getElementById('exNotes').value.trim();
+    const modal = document.getElementById('exerciseModal');
+    const editId = modal?.dataset.editId;
+
     if (!type) { showToast('请输入运动类型', 'error'); return; }
     try {
-        await apiPost('/exercise/records', {
-            exercise_type: type,
-            duration,
-            intensity,
-            notes,
-            record_date: date,
-        });
-        showToast('运动记录已添加', 'success');
+        if (editId) {
+            await fetch('/exercise/records/' + editId, {
+                method: 'PUT',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify({
+                    exercise_type: type,
+                    duration,
+                    intensity,
+                    notes,
+                    record_date: date,
+                }),
+            });
+            showToast('运动记录已更新', 'success');
+            delete modal.dataset.editId;
+            document.getElementById('btnSaveExercise').textContent = '保存记录';
+        } else {
+            await apiPost('/exercise/records', {
+                exercise_type: type,
+                duration,
+                intensity,
+                notes,
+                record_date: date,
+            });
+            showToast('运动记录已添加', 'success');
+        }
         document.getElementById('exType').value = '';
         document.getElementById('exDuration').value = '';
         document.getElementById('exNotes').value = '';
-        await loadExerciseRecords();
-    } catch (e) { /* apiPost 已 showToast */ }
+        if (modal) modal.classList.remove('active');
+        await loadExerciseRecordsInTraining();
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
 }
 
 async function deleteExerciseRecord(id) {
@@ -447,8 +1250,194 @@ async function deleteExerciseRecord(id) {
     try {
         await apiDelete(`/exercise/records/${id}`);
         showToast('记录已删除', 'info');
-        await loadExerciseRecords();
+        await loadExerciseRecordsInTraining();
     } catch (e) { /* apiDelete 已 showToast */ }
+}
+
+function showExerciseDetail(id, records) {
+    const record = records.find(r => r.id === id);
+    if (!record) return;
+    document.getElementById('exDetailType').textContent = record.exercise_type || '-';
+    document.getElementById('exDetailDuration').textContent = (record.duration || 0) + ' 分钟';
+    document.getElementById('exDetailIntensity').textContent = record.intensity || '-';
+    document.getElementById('exDetailDate').textContent = record.record_date || '-';
+    document.getElementById('exDetailNotes').textContent = record.notes || '无';
+    const detailModal = document.getElementById('exerciseDetailModal');
+    detailModal.dataset.recordId = id;
+    detailModal.classList.add('active');
+}
+
+function initExerciseDetailUI() {
+    const detailModal = document.getElementById('exerciseDetailModal');
+    const btnClose = document.getElementById('btnCloseExerciseDetail');
+    const btnCloseFooter = document.getElementById('btnCloseExerciseDetailFooter');
+    const btnEdit = document.getElementById('btnEditFromExDetail');
+    const btnDelete = document.getElementById('btnDeleteFromExDetail');
+
+    const closeDetail = () => { if (detailModal) detailModal.classList.remove('active'); };
+    if (btnClose) btnClose.addEventListener('click', closeDetail);
+    if (btnCloseFooter) btnCloseFooter.addEventListener('click', closeDetail);
+    if (detailModal) detailModal.addEventListener('click', (e) => { if (e.target === detailModal) closeDetail(); });
+
+    if (btnEdit) btnEdit.addEventListener('click', () => {
+        const id = parseInt(detailModal?.dataset.recordId);
+        closeDetail();
+        openExerciseEditFromDetail(id);
+    });
+    if (btnDelete) btnDelete.addEventListener('click', async () => {
+        const id = parseInt(detailModal?.dataset.recordId);
+        if (!confirm('确定删除这条运动记录吗？')) return;
+        try {
+            await apiDelete(`/exercise/records/${id}`);
+            showToast('记录已删除', 'info');
+            closeDetail();
+            await loadExerciseRecordsInTraining();
+        } catch (e) { /* apiDelete 已 showToast */ }
+    });
+}
+
+function openExerciseEditFromDetail(id) {
+    const modal = document.getElementById('exerciseModal');
+    if (!modal) return;
+    apiGet('/exercise/records?limit=100').then(data => {
+        const record = data.find(r => r.id === id);
+        if (!record) return;
+        modal.dataset.editId = id;
+        document.getElementById('exType').value = record.exercise_type || '';
+        document.getElementById('exDuration').value = record.duration || '';
+        document.getElementById('exIntensity').value = record.intensity || '中等';
+        document.getElementById('exDate').value = record.record_date || '';
+        document.getElementById('exNotes').value = record.notes || '';
+        document.getElementById('btnSaveExercise').textContent = '更新记录';
+        modal.classList.add('active');
+    });
+}
+
+async function loadExerciseRecordsInTraining() {
+    const list = document.getElementById('exerciseList');
+    if (!list) return;
+    if (!isLoggedIn()) {
+        list.innerHTML = '<div class="training-empty"><p>请先登录后查看运动记录</p></div>';
+        return;
+    }
+
+    // 动态更新运动类型筛选选项
+    await updateExerciseTypeFilter();
+
+    const keyword = document.getElementById('exerciseSearch')?.value || '';
+    const exerciseType = document.getElementById('exerciseTypeFilter')?.value || '';
+    const durationRange = document.getElementById('exerciseDurationFilter')?.value || '';
+    const intensity = document.getElementById('exerciseIntensityFilter')?.value || '';
+    const dateFrom = document.getElementById('exerciseDateFrom')?.value || '';
+    const dateTo = document.getElementById('exerciseDateTo')?.value || '';
+
+    let url = '/exercise/records?limit=100';
+    if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+    if (exerciseType) url += '&exercise_type=' + encodeURIComponent(exerciseType);
+    if (intensity) url += '&intensity=' + encodeURIComponent(intensity);
+    if (durationRange) {
+        const parts = durationRange.split('-');
+        if (parts[0]) url += '&duration_min=' + parts[0];
+        if (parts[1]) url += '&duration_max=' + parts[1];
+    }
+    if (dateFrom) url += '&date_from=' + encodeURIComponent(dateFrom);
+    if (dateTo) url += '&date_to=' + encodeURIComponent(dateTo);
+
+    try {
+        const data = await fetch(url, { headers: authHeaders() }).then(r => r.json());
+        if (!data || data.length === 0) {
+            list.innerHTML = '<div class="training-empty"><svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="16" stroke="#999" stroke-width="2" fill="none"/><path d="M24 16v8l6 4" stroke="#999" stroke-width="2" fill="none"/></svg><p>暂无运动记录，点击"新增"按钮或前往智能问答界面添加运动记录</p></div>';
+            return;
+        }
+        list.innerHTML = data.map(r => `
+            <div class="exercise-card" data-id="${r.id}">
+                <div class="exercise-card-check"><input type="checkbox" value="${r.id}"></div>
+                <div class="exercise-card-body">
+                    <div class="exercise-card-main">
+                        <span class="exercise-card-type">${escapeHtml(r.exercise_type)}</span>
+                        <span class="exercise-card-duration">${r.duration}分钟</span>
+                        <span class="exercise-card-intensity">${escapeHtml(r.intensity)}</span>
+                    </div>
+                    <div class="exercise-card-meta">
+                        <span class="exercise-card-date">${escapeHtml(r.record_date)}</span>
+                        ${r.notes ? `<span class="exercise-card-notes">${escapeHtml(r.notes)}</span>` : ''}
+                    </div>
+                </div>
+                <div class="exercise-card-actions">
+                    <button class="btn btn-ghost btn-xs ex-edit" title="编辑" data-id="${r.id}">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button class="btn btn-ghost btn-xs ex-delete" title="删除" data-id="${r.id}">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        list.querySelectorAll('.exercise-card').forEach(card => {
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.exercise-card-check') || e.target.closest('.exercise-card-actions')) return;
+                if (document.body.classList.contains('training-batch-mode')) return;
+                showExerciseDetail(parseInt(card.dataset.id), data);
+            });
+        });
+
+        list.querySelectorAll('.ex-edit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = parseInt(btn.dataset.id);
+                openExerciseEditFromDetail(id);
+            });
+        });
+
+        list.querySelectorAll('.ex-delete').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const id = parseInt(btn.dataset.id);
+                if (!confirm('确定删除这条运动记录？')) return;
+                try {
+                    await apiDelete(`/exercise/records/${id}`);
+                    showToast('记录已删除', 'info');
+                    loadExerciseRecordsInTraining();
+                } catch (e) { /* apiDelete 已 showToast */ }
+            });
+        });
+
+        list.querySelectorAll('.exercise-card-check input').forEach(cb => {
+            cb.addEventListener('change', updateTrainingBatchCount);
+        });
+    } catch (e) {
+        list.innerHTML = '<div class="training-empty"><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function openExerciseEdit(id) {
+    fetch('/exercise/records?limit=1', { headers: authHeaders() })
+        .then(() => {
+            const modal = document.getElementById('exerciseModal');
+            if (!modal) return;
+            modal.dataset.editId = id;
+            modal.classList.add('active');
+            loadExerciseRecordsForEdit(id);
+        });
+}
+
+async function loadExerciseRecordsForEdit(id) {
+    try {
+        const data = await apiGet('/exercise/records?limit=100');
+        const record = data.find(r => r.id === id);
+        if (record) {
+            document.getElementById('exType').value = record.exercise_type || '';
+            document.getElementById('exDuration').value = record.duration || '';
+            document.getElementById('exIntensity').value = record.intensity || '中等';
+            document.getElementById('exDate').value = record.record_date || '';
+            document.getElementById('exNotes').value = record.notes || '';
+            document.getElementById('btnSaveExercise').textContent = '更新记录';
+        }
+        loadExerciseRecords();
+    } catch (e) {
+        console.warn('加载运动记录详情失败:', e);
+    }
 }
 
 // ==================== 网络请求封装 ====================
@@ -471,7 +1460,7 @@ function clearAuthStateSilently() {
     showToast('登录凭证已失效，请重新登录', 'info');
 }
 
-async function apiPost(path, body) {
+window.apiPost = async function apiPost(path, body) {
     try {
         const resp = await fetch(`${API_BASE_URL}${path}`, {
             method: 'POST',
@@ -480,14 +1469,48 @@ async function apiPost(path, body) {
         });
         if (!resp.ok) {
             const text = await resp.text().catch(() => '');
+            if (resp.status === 422) {
+                try {
+                    const detail = JSON.parse(text).detail;
+                    const fieldNameMap = {
+                        notes: '备注', exercise_type: '运动类型', duration: '时长',
+                        intensity: '强度', record_date: '日期',
+                        title: '标题', category: '分类', source: '来源',
+                        question: '问题', username: '用户名', password: '密码',
+                        goal: '训练目标', level: '经验水平',
+                    };
+                    const errors = (Array.isArray(detail) ? detail : [detail]).map(d => {
+                        const field = (d.loc || []).slice(-1)[0] || '未知字段';
+                        const limit = (d.ctx || {}).limit_value || (d.ctx || {}).max_length || '';
+                        const cnName = fieldNameMap[field] || field;
+                        const msgMap = {
+                            'notes': `备注超过字数限制（最多${limit}字）`,
+                            'exercise_type': `运动类型超过字数限制（最多${limit}字）`,
+                            'duration': '时长格式不正确',
+                            'intensity': '强度格式不正确',
+                            'record_date': '日期格式不正确',
+                        };
+                        return msgMap[field] || `${cnName}输入不符合要求`;
+                    });
+                    if (errors.length) {
+                        showToast(errors.join('；'), 'error');
+                        throw new Error('VALIDATION_ERROR');
+                    }
+                } catch (parseErr) {
+                    if (parseErr.message === 'VALIDATION_ERROR') throw parseErr;
+                }
+            }
             throw new Error(`HTTP ${resp.status} - ${text.substring(0, 200)}`);
         }
         return await resp.json();
     } catch (e) {
-        showToast(`网络请求失败: ${e.message}`, 'error');
+        if (e.message !== 'VALIDATION_ERROR') {
+            showToast(`网络请求失败: ${e.message}`, 'error');
+        }
         throw e;
     }
 }
+var apiPost = window.apiPost;
 
 async function apiDelete(path, query) {
     try {
@@ -525,10 +1548,20 @@ function switchTab(tab) {
     document.querySelector(`.nav-btn[data-tab="${tab}"]`).classList.add('active');
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.getElementById(`tab-${tab}`).classList.add('active');
+    if (tab === 'training') {
+        if (currentTrainingSubtab === 'exercises') {
+            loadExerciseRecordsInTraining();
+        } else {
+            loadTrainingPlans();
+        }
+    }
+    if (tab === 'history') {
+        initHistory();
+    }
 }
 
 // ==================== Toast 提示 ====================
-function showToast(msg, type = 'info') {
+window.showToast = function showToast(msg, type = 'info') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -540,6 +1573,7 @@ function showToast(msg, type = 'info') {
         setTimeout(() => toast.remove(), 300);
     }, 3000);
 }
+var showToast = window.showToast;
 
 // ==================== 聊天功能 ====================
 function initChat() {
@@ -554,11 +1588,17 @@ function initChat() {
     }
     renderSessionList();
 
-    sendBtn.addEventListener('click', handleSendMessage);
+    sendBtn.addEventListener('click', function() {
+        if (sendBtn.classList.contains('streaming')) {
+            if (window.stopStreaming) window.stopStreaming();
+        } else {
+            window.handleSendMessage();
+        }
+    });
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            handleSendMessage();
+            window.handleSendMessage();
         }
     });
     input.addEventListener('input', () => {
@@ -568,7 +1608,7 @@ function initChat() {
     newChatBtn.addEventListener('click', () => createSession());
 }
 
-async function createSession() {
+window.createSession = async function createSession() {
     let session;
     if (isLoggedIn() && STATE.backendHealthy) {
         try {
@@ -584,13 +1624,15 @@ async function createSession() {
     STATE.currentSessionId = session.id;
     renderSessionList();
     renderMessages();
-}
+};
+var createSession = window.createSession;
 
-function getCurrentSession() {
+window.getCurrentSession = function getCurrentSession() {
     return STATE.sessions.find(s => s.id === STATE.currentSessionId);
-}
+};
+var getCurrentSession = window.getCurrentSession;
 
-function renderSessionList() {
+window.renderSessionList = function renderSessionList() {
     const list = document.getElementById('chatSessionList');
     if (!list) return;
     if (STATE.sessions.length === 0) {
@@ -619,6 +1661,7 @@ function renderSessionList() {
         });
     });
 }
+var renderSessionList = window.renderSessionList;
 
 async function loadCurrentSessionMessages() {
     const session = getCurrentSession();
@@ -676,7 +1719,7 @@ async function deleteSession(id) {
     showToast('对话已删除', 'info');
 }
 
-function renderMessages() {
+window.renderMessages = function renderMessages() {
     const container = document.getElementById('chatMessages');
     const session = getCurrentSession();
 
@@ -709,18 +1752,23 @@ function renderMessages() {
         return;
     }
 
-    container.innerHTML = session.messages.map(m => `
+    container.innerHTML = session.messages.map((m, idx) => {
+    const isLastAssistant = m.role === 'assistant' && idx === session.messages.length - 1;
+    return `
         <div class="message ${m.role}">
             <div class="message-avatar">${m.role === 'user' ? 'U' : 'AI'}</div>
             <div>
                 <div class="message-bubble">${formatMessage(m.content, m.sources)}</div>
-                <div class="message-time">${m.time}</div>
+                <div class="message-time">${m.time}${m.cached ? ' <span class="cache-badge" title="该回答来自缓存，响应速度更快">⚡ 缓存</span>' : ''}</div>
+                ${isLastAssistant ? `<button class="message-retry-btn" onclick="retryLastMessage()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,4 4,1 7,4"/><path d="M4,1 C7,1 12,4 13,8 C14,12 11,15 8,15"/></svg> 重新回答</button>` : ''}
             </div>
         </div>
-    `).join('');
+    `;
+}).join('');
 
     container.scrollTop = container.scrollHeight;
 }
+var renderMessages = window.renderMessages;
 
 function inlineFormat(text) {
     let t = escapeHtml(text);
@@ -732,6 +1780,7 @@ function inlineFormat(text) {
     t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     // 【】加粗
     t = t.replace(/【(.+?)】/g, '<strong>【$1】</strong>');
+    t = t.replace(/\[([A-Z]?\d+)\]/g, '<a class="ref-link" href="#source-$1" title="跳转到参考资料$1">[$1]</a>');
     return t;
 }
 
@@ -845,8 +1894,13 @@ function formatMessage(content, sources) {
             }
             html += `<li>${inlineFormat(olMatch[2])}</li>`;
         } else {
-            closeList();
-            html += line ? inlineFormat(line) : '<br>';
+            // 含有引用编号的续行（如"依据[1]…"），追加到当前列表项，不关闭列表
+            if (listOpen && /\[([A-Z]?\d+)\]/.test(line)) {
+                html += `<div class="li-cont">${inlineFormat(line)}</div>`;
+            } else {
+                closeList();
+                html += line ? inlineFormat(line) : '<br>';
+            }
         }
     }
     closeList();
@@ -855,12 +1909,26 @@ function formatMessage(content, sources) {
     }
 
     if (sources && sources.length > 0) {
-        html += '<div class="source-tag">参考来源：' +
-            sources.map((s, i) => {
-                const label = `【资料${i + 1}】${s.title}`;
-                return s.url ? `<a href="${s.url}" target="_blank" rel="noopener">${label}</a>` : label;
-            }).join('、') +
-            '</div>';
+        html += '<div class="reference-section">';
+        html += '<div class="reference-materials"><strong>参考资料：</strong>';
+        sources.forEach((s) => {
+            html += '<span class="ref-id">[' + escapeHtml(s.id) + ']</span>';
+        });
+        html += '</div>';
+        html += '<div class="reference-sources"><strong>参考来源：</strong>';
+        sources.forEach((s) => {
+            const hasUrl = s.url && s.url.trim();
+            html += '<div class="source-item" id="source-' + escapeHtml(s.id) + '">';
+            if (hasUrl) {
+                html += '<span class="source-id">' + escapeHtml(s.id) + '</span>: ';
+                html += '<a href="' + s.url + '" target="_blank" rel="noopener" class="source-link">' + escapeHtml(s.title) + '</a>';
+            } else {
+                html += '<span class="source-id">' + escapeHtml(s.id) + '</span>: ';
+                html += '<span class="source-title">' + escapeHtml(s.title) + '</span>';
+            }
+            html += '</div>';
+        });
+        html += '</div></div>';
     }
 
     if (content.includes('风险提示') || content.includes('免责') || content.includes('咨询医生')) {
@@ -885,7 +1953,7 @@ function handleSuggestClick(e) {
     handleSendMessage();
 }
 
-async function handleSendMessage() {
+window.handleSendMessage = async function handleSendMessage() {
     const input = document.getElementById('chatInput');
     const question = input.value.trim();
     if (!question) return;
@@ -935,15 +2003,20 @@ async function handleSendMessage() {
     container.appendChild(typingDiv);
     container.scrollTop = container.scrollHeight;
 
-    let answer, sources;
+    let answer, sources, cached = false;
 
     if (STATE.backendHealthy) {
         try {
-            const body = { question, mode, history };
+            const body = { question, mode, history, scene: window.currentScene };
+            if (window._skipCache) {
+                body.skip_cache = true;
+                window._skipCache = false;
+            }
             if (session.remote && isLoggedIn()) body.session_id = session.id;
             const data = await apiPost('/ask', body);
             answer = data.answer;
             sources = data.sources;
+            cached = data.cached || false;
         } catch (e) {
             answer = `请求失败：${e.message}\n\n当前请求地址：${API_BASE_URL}/ask\n页面地址：${window.location.href}`;
             sources = [];
@@ -959,15 +2032,55 @@ async function handleSendMessage() {
         role: 'assistant',
         content: answer,
         sources: sources,
+        cached: cached,
         time: formatTime(new Date()),
     };
     session.messages.push(assistantMsg);
     renderMessages();
 
+    // 自动保存训练计划（从生成计划入口来的）
+    if (window._pendingPlanSave) {
+        const planInfo = window._pendingPlanSave;
+        window._pendingPlanSave = null;
+        autoSaveTrainingPlan(question, answer, planInfo);
+    }
+
     if (STATE.backendHealthy && isLoggedIn()) {
         loadHistoryFromBackend();
     }
 }
+var handleSendMessage = window.handleSendMessage;
+
+// 重新回答：移除最后一条 assistant 消息，重新发送用户问题（跳过缓存）
+window.retryLastMessage = function retryLastMessage() {
+    const session = getCurrentSession();
+    if (!session || session.messages.length < 2) return;
+
+    // 找到最后一条 user 消息
+    let lastUserIdx = -1;
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+        if (session.messages[i].role === 'user') {
+            lastUserIdx = i;
+            break;
+        }
+    }
+    if (lastUserIdx === -1) return;
+
+    // 移除最后一条 assistant 消息（如果有）
+    if (session.messages.length > lastUserIdx + 1) {
+        session.messages = session.messages.slice(0, lastUserIdx + 1);
+    }
+
+    // 设置跳过缓存标记
+    window._skipCache = true;
+
+    // 重新发送
+    const question = session.messages[lastUserIdx].content;
+    const input = document.getElementById('chatInput');
+    if (input) input.value = question;
+    window.handleSendMessage();
+};
+var retryLastMessage = window.retryLastMessage;
 
 // ==================== 检索对比面板 ====================
 function initCompare() {
@@ -1077,7 +2190,7 @@ async function handleCompare() {
 }
 
 // ==================== 知识库浏览 ====================
-async function initKnowledge() {
+window.initKnowledge = async function initKnowledge() {
     if (!STATE.backendHealthy) return initKnowledgeFallback();
 
     try {
@@ -1248,6 +2361,7 @@ function sortKnowledgeItems(items) {
     }
     return arr;
 }
+var initKnowledge = window.initKnowledge;
 
 // ==================== 问答历史 ====================
 let historyListenersBound = false;
@@ -1319,7 +2433,7 @@ function initHistoryFallback() {
     renderHistoryList();
 }
 
-async function loadHistoryFromBackend() {
+window.loadHistoryFromBackend = async function loadHistoryFromBackend() {
     try {
         const data = await apiGet('/history');
         STATE.history = data.map(r => ({
@@ -1335,6 +2449,7 @@ async function loadHistoryFromBackend() {
     }
     renderHistoryList();
 }
+var loadHistoryFromBackend = window.loadHistoryFromBackend;
 
 function renderHistoryList() {
     const container = document.getElementById('historyList');
@@ -1414,6 +2529,22 @@ function renderHistoryList() {
             }
         });
     });
+
+    // 点击历史记录查看完整问答
+    container.querySelectorAll('.history-item').forEach(el => {
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('.history-item-check') || e.target.closest('.history-item-delete')) return;
+            if (document.body.classList.contains('history-batch-mode')) return;
+            const id = el.dataset.id;
+            const item = STATE.history.find(h => String(h.id) === String(id));
+            if (item) {
+                const time = new Date(item.time);
+                const modeLabel = item.mode === 'hybrid' ? '混合检索' : item.mode === 'bm25' ? 'BM25' : '向量检索';
+                const meta = `${formatTime(time)} · 检索模式：${modeLabel}`;
+                showHistoryDetail(item.question, item.answer, meta, item.sources);
+            }
+        });
+    });
 }
 
 function loadLocalHistory() {
@@ -1426,12 +2557,16 @@ function loadLocalHistory() {
 }
 
 // ==================== 工具函数 ====================
-function formatTime(date) {
+window.formatTime = function formatTime(date) {
     const d = date instanceof Date ? date : new Date(date);
-    const h = d.getHours().toString().padStart(2, '0');
-    const m = d.getMinutes().toString().padStart(2, '0');
+    if (isNaN(d.getTime())) return '';
+    // 转换为北京时间 (UTC+8)
+    const bj = new Date(d.getTime() + 8 * 3600 * 1000);
+    const h = bj.getUTCHours().toString().padStart(2, '0');
+    const m = bj.getUTCMinutes().toString().padStart(2, '0');
     return `${h}:${m}`;
 }
+var formatTime = window.formatTime;
 
 function formatDateTime(str) {
     if (!str) return '';
@@ -1451,12 +2586,13 @@ function formatDateTime(str) {
     return `${y}-${mo}-${day} ${h}:${mi}`;
 }
 
-function escapeHtml(str) {
+window.escapeHtml = function escapeHtml(str) {
     if (!str) return '';
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
 }
+var escapeHtml = window.escapeHtml;
 
 // ==================== 高级设置 ====================
 function initSettings() {
@@ -1549,11 +2685,12 @@ async function applyMode() {
     }
 }
 
-async function openSettings() {
+window.openSettings = async function openSettings() {
     const modal = document.getElementById('settingsModal');
     modal.classList.add('active');
     await loadSettings();
 }
+var openSettings = window.openSettings;
 
 function closeSettings() {
     const modal = document.getElementById('settingsModal');
@@ -1986,10 +3123,11 @@ function openImportModal() {
     resetImportForm();
 }
 
-function closeImportModal() {
+window.closeImportModal = function closeImportModal() {
     document.getElementById('entryModal').classList.remove('active');
     resetImportForm();
 }
+var closeImportModal = window.closeImportModal;
 
 function resetImportForm() {
     importFiles = [];

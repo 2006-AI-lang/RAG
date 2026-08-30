@@ -32,7 +32,7 @@ CATEGORY_KEYWORDS = {
 
 def classify_by_keywords(text: str) -> str:
     """
-    基于关键词自动分类
+    基于关键词自动分类（从数据库动态加载分类关键词）。
 
     Args:
         text: 待分类文本（标题+内容）
@@ -40,15 +40,36 @@ def classify_by_keywords(text: str) -> str:
     Returns:
         分类名称，如果没有匹配返回 "未分类"
     """
+    try:
+        from database import get_all_category_keywords
+        categories = get_all_category_keywords()
+    except Exception:
+        categories = []
+
+    if not categories:
+        return "未分类"
+
     scores = {}
-    for category, keywords in CATEGORY_KEYWORDS.items():
-        score = sum(1 for kw in keywords if kw in text)
+    for cat in categories:
+        score = sum(1 for kw in cat["keywords"] if kw in text)
         if score > 0:
-            scores[category] = score
+            scores[cat["category"]] = score
 
     if scores:
         return max(scores, key=scores.get)
     return "未分类"
+
+
+def get_categories_for_llm() -> str:
+    """获取用于 LLM 提示的分类列表。"""
+    try:
+        from database import get_category_names
+        names = get_category_names()
+        if names:
+            return "、".join(names)
+    except Exception:
+        pass
+    return "力量训练、增肌、减脂、有氧运动、柔韧性、损伤康复、营养饮食、运动计划"
 
 
 # 全局计数器，用于生成条目 ID
@@ -220,13 +241,17 @@ def split_by_none(text: str, source: str, default_category: str = "未分类") -
 
 def split_by_paragraph(text: str, source: str, default_category: str = "未分类") -> List[Dict]:
     """
-    按段落拆分文档
+    按段落拆分文档（支持重叠窗口）。
 
     策略:
     1. 按双换行符分段
     2. 合并过短段落 (< 50 字) 到相邻段落
     3. 每段首句作为标题（截取前 30 字）
+    4. 相邻段落按 overlap 大小重叠（默认 100 字），保留上下文
     """
+    from config import settings
+    overlap = settings.RETRIEVAL_CHUNK_OVERLAP
+
     paragraphs = re.split(r'\n\s*\n', text)
     paragraphs = [p.strip() for p in paragraphs if p.strip()]
 
@@ -251,12 +276,24 @@ def split_by_paragraph(text: str, source: str, default_category: str = "未分�
             merged = [text.strip()]
 
     entries = []
-    for para in merged:
+    for i, para in enumerate(merged):
         entry_id = _generate_entry_id()
         first_line = para.split('\n')[0].strip()
         title = first_line[:30] + ("..." if len(first_line) > 30 else "")
         if not title:
             title = para[:30] + ("..." if len(para) > 30 else "")
+
+        # 重叠：在前面追加前一段的尾部，在后面追加后一段的头部
+        content = para
+        if overlap > 0:
+            if i > 0:
+                prev_tail = merged[i - 1][-overlap:].lstrip()
+                if prev_tail:
+                    content = prev_tail + "\n" + content
+            if i < len(merged) - 1:
+                next_head = merged[i + 1][:overlap].rstrip()
+                if next_head:
+                    content = content + "\n" + next_head
 
         # 自动分类：优先使用关键词分类，否则使用默认分类
         combined_text = f"{title} {para}"
@@ -267,7 +304,7 @@ def split_by_paragraph(text: str, source: str, default_category: str = "未分�
         entries.append({
             "entry_id": entry_id,
             "title": title,
-            "content": para,
+            "content": content,
             "category": category,
             "source": source,
             "tags": "[]",
@@ -336,7 +373,7 @@ async def split_by_llm(text: str, source: str, llm_client, chunk_size: int = 150
 要求：
 1. 每条知识独立完整，可用于问答检索
 2. 返回 JSON 数组，每条包含: title, content, category, tags
-3. category 从以下选择: 力量训练、增肌、减脂、损伤预防、营养、有氧运动、核心训练、柔韧与恢复
+3. category 从以下选择: """ + get_categories_for_llm() + """
 4. content 保持原文，100-500 字
 5. tags 是字符串数组，包含 2-4 个关键词
 

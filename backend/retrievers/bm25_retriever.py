@@ -9,6 +9,7 @@ import jieba
 from rank_bm25 import BM25Okapi
 
 from data.knowledge_base import get_knowledge_texts
+from config import settings
 
 logger = logging.getLogger("fitqa.bm25")
 
@@ -49,7 +50,7 @@ class BM25Retriever:
 
         results = []
         for idx, score in top_indices:
-            if score <= 0:
+            if score < settings.RETRIEVAL_BM25_MIN_SCORE:
                 continue
             item = self.items[idx]
             content = item["content"]
