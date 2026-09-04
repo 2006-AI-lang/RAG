@@ -1728,11 +1728,11 @@ window.renderMessages = function renderMessages() {
             <div class="chat-welcome">
                 <div class="welcome-icon">
                     <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-                        <rect x="3" y="10" width="4" height="12" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
-                        <rect x="9" y="7" width="4" height="18" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
-                        <line x1="13" y1="16" x2="19" y2="16" stroke="#4A9E6B" stroke-width="2.5" stroke-linecap="round"/>
-                        <rect x="19" y="7" width="4" height="18" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
-                        <rect x="25" y="10" width="4" height="12" rx="1.5" stroke="#4A9E6B" stroke-width="2.5"/>
+                        <rect x="3" y="10" width="4" height="12" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                        <rect x="9" y="7" width="4" height="18" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                        <line x1="13" y1="16" x2="19" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        <rect x="19" y="7" width="4" height="18" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
+                        <rect x="25" y="10" width="4" height="12" rx="1.5" stroke="currentColor" stroke-width="2.5"/>
                     </svg>
                 </div>
                 <h2>欢迎使用 FitQA</h2>
