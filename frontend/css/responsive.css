@@ -459,3 +459,66 @@
         flex-wrap: wrap;
     }
 }
+/* ============================================================
+   Responsive Enhancement Layer - Post-Skills Optimization
+   ============================================================ */
+
+/* ---------- Tablet Enhanced ---------- */
+@media (max-width: 1024px) {
+    .app-header {
+        backdrop-filter: blur(16px) saturate(160%);
+        -webkit-backdrop-filter: blur(16px) saturate(160%);
+    }
+
+    .chat-welcome h2 {
+        font-size: 20px;
+    }
+}
+
+/* ---------- Mobile Enhanced ---------- */
+@media (max-width: 640px) {
+    .app-header {
+        backdrop-filter: blur(12px) saturate(150%);
+        -webkit-backdrop-filter: blur(12px) saturate(150%);
+    }
+
+    .message {
+        max-width: 92%;
+    }
+
+    .message.user {
+        max-width: 88%;
+    }
+
+    .chat-input-wrapper:focus-within {
+        box-shadow: 0 0 0 2px rgba(48, 177, 90, 0.1);
+    }
+
+    .knowledge-card:hover,
+    .history-item:hover {
+        transform: none;
+    }
+
+    .session-item:hover {
+        transform: none;
+    }
+
+    .toast {
+        max-width: 88vw;
+    }
+}
+
+/* ---------- Small Mobile ---------- */
+@media (max-width: 380px) {
+    .app-header {
+        padding: 6px 10px;
+    }
+
+    .chat-welcome h2 {
+        font-size: 18px;
+    }
+
+    .chat-welcome p {
+        font-size: 13px;
+    }
+}

@@ -838,6 +838,12 @@ function loadTrainingPlans() {
             list.querySelectorAll('.training-item-check input').forEach(cb => {
                 cb.addEventListener('change', updateTrainingBatchCount);
             });
+
+            // Stagger animation for training items
+            list.querySelectorAll('.training-item').forEach((item, i) => {
+                item.classList.add('stagger-in');
+                item.style.setProperty('--stagger-index', i);
+            });
         })
         .catch(e => {
             list.innerHTML = '<div class="training-empty"><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
@@ -2338,6 +2344,11 @@ function renderKnowledgeList(items) {
         cb.addEventListener('change', updateKnowledgeBatchCount);
     });
 }
+    // Stagger animation for cards
+    container.querySelectorAll('.knowledge-card').forEach((card, i) => {
+        card.classList.add('stagger-in');
+        card.style.setProperty('--stagger-index', i);
+    });
 
 function sortKnowledgeItems(items) {
     const sort = STATE.knowledgeSort || 'index';
@@ -2544,6 +2555,11 @@ function renderHistoryList() {
                 showHistoryDetail(item.question, item.answer, meta, item.sources);
             }
         });
+    });
+    // Stagger animation for history items
+    container.querySelectorAll('.history-item').forEach((item, i) => {
+        item.classList.add('stagger-in');
+        item.style.setProperty('--stagger-index', i);
     });
 }
 

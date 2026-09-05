@@ -5160,3 +5160,207 @@ body::after {
         animation: none !important;
     }
 }
+
+/* ============================================================
+   Emil Kowalski / Apple Design Enhancement Layer
+   Consolidated — no conflicts with the Apple Style Polish above.
+   ============================================================ */
+
+/* ---------- Refined Easing Tokens ---------- */
+:root {
+    --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    /* --spring is already defined above as 0.34,1.56,0.64,1 */
+    --duration-fast: 100ms;
+    --duration-normal: 200ms;
+    --duration-slow: 300ms;
+}
+
+/* ---------- Button Press Feedback ---------- */
+.btn-send:active:not(:disabled) {
+    transform: scale(0.90);
+    transition: transform 60ms var(--ease-out-strong);
+}
+
+.nav-btn:active {
+    transform: scale(0.96);
+}
+
+.suggest-btn:active {
+    transform: scale(0.96);
+}
+
+.filter-tag:active {
+    transform: scale(0.95);
+}
+
+/* ---------- Input Focus Glow ---------- */
+.chat-input-wrapper:focus-within {
+    box-shadow: var(--primary-ring),
+                0 0 24px rgba(48, 177, 90, 0.08);
+}
+
+/* ---------- Message Bubble Spring Entrance ---------- */
+@keyframes messageSpringIn {
+    0% {
+        opacity: 0;
+        transform: translateY(10px) scale(0.98);
+    }
+    60% {
+        opacity: 1;
+        transform: translateY(-1px) scale(1.005);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.message {
+    animation: messageSpringIn 0.4s var(--ease-out-strong) both;
+}
+
+.message.user {
+    animation: messageSpringIn 0.3s var(--ease-out-strong) both;
+}
+
+/* ---------- Assistant Bubble Hover ---------- */
+.message.assistant .message-bubble {
+    transition: box-shadow var(--duration-normal) var(--ease-out-strong),
+                border-color var(--duration-normal) var(--ease-out-strong);
+}
+
+.message.assistant:hover .message-bubble {
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08),
+                inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+/* ---------- Source Tag Hover ---------- */
+.message-bubble .source-tag {
+    transition: transform 0.2s var(--ease-out-strong),
+                box-shadow 0.2s var(--ease-out-strong);
+}
+
+.message-bubble .source-tag:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(48, 177, 90, 0.18);
+}
+
+/* ---------- Answer Action Buttons ---------- */
+.answer-actions .btn-icon:hover {
+    transform: scale(1.08);
+}
+
+/* ---------- Scroll Fade Mask on Chat ---------- */
+.chat-messages {
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0px,
+        black 16px,
+        black calc(100% - 16px),
+        transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0px,
+        black 16px,
+        black calc(100% - 16px),
+        transparent 100%
+    );
+}
+
+/* ---------- Typing Indicator Polish ---------- */
+.typing-indicator span {
+    width: 7px;
+    height: 7px;
+    box-shadow: 0 0 6px rgba(48, 177, 90, 0.3);
+}
+
+/* ---------- Streaming Cursor ---------- */
+.streaming-cursor {
+    animation: cursorPulse 1s ease-in-out infinite;
+    border-radius: 1px;
+}
+
+@keyframes cursorPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+/* ---------- Status Dot ---------- */
+.status-dot.online {
+    animation: statusPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.45); }
+    50% { box-shadow: 0 0 0 5px rgba(52, 199, 89, 0); }
+}
+
+/* ---------- Settings Gear Rotation ---------- */
+.btn-settings:hover svg {
+    transform: rotate(90deg);
+    transition: transform 0.3s var(--ease-out-strong);
+}
+
+.btn-settings svg {
+    transition: transform var(--duration-normal) var(--ease-out-strong);
+}
+
+/* ---------- Logo Micro-interaction ---------- */
+.logo {
+    transition: transform 0.35s var(--spring);
+}
+
+.logo:hover {
+    transform: rotate(-3deg) scale(1.03);
+}
+
+/* ---------- List Item Stagger (JS-driven) ---------- */
+/* Applied via JS class .stagger-in with --stagger-index custom property */
+.stagger-in {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: listItemFadeIn 0.3s var(--ease-out-strong) forwards;
+    animation-delay: calc(var(--stagger-index, 0) * 30ms);
+}
+
+@keyframes listItemFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ---------- Reduced Motion: Stagger & Message Safety ---------- */
+@media (prefers-reduced-motion: reduce) {
+    .stagger-in {
+        opacity: 1;
+        transform: none;
+        animation: none;
+    }
+
+    .message,
+    .message.user,
+    .message.assistant {
+        animation: none;
+    }
+}
+
+/* ---------- Hover: Touch-safe ---------- */
+@media (hover: hover) and (pointer: fine) {
+    .suggest-btn:hover {
+        transform: translateY(-1px);
+    }
+}
+
+@media (hover: none) {
+    .suggest-btn:hover {
+        transform: none;
+    }
+}
