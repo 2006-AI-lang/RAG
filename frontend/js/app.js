@@ -2343,12 +2343,12 @@ function renderKnowledgeList(items) {
     container.querySelectorAll('.knowledge-check').forEach(cb => {
         cb.addEventListener('change', updateKnowledgeBatchCount);
     });
-}
     // Stagger animation for cards
     container.querySelectorAll('.knowledge-card').forEach((card, i) => {
         card.classList.add('stagger-in');
         card.style.setProperty('--stagger-index', i);
     });
+}
 
 function sortKnowledgeItems(items) {
     const sort = STATE.knowledgeSort || 'index';

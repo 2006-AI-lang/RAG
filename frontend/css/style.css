@@ -4313,7 +4313,7 @@ body::before,
 body::after {
     content: "";
     position: fixed;
-    z-index: -1;
+    z-index: -2;
     pointer-events: none;
     border-radius: 50%;
     will-change: transform;
@@ -4345,6 +4345,14 @@ body::after {
 @keyframes ambientDriftB {
     0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
     50%      { transform: translate3d(-54px, -28px, 0) scale(1.08); }
+}
+
+/* 互动粒子背景：位于静态柔光之上、页面内容之下 */
+#bg-canvas {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
 }
 
 ::selection {
